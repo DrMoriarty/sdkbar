@@ -1,0 +1,17 @@
+{
+    "name": "sdkbar",
+    "version": "0.0.1",
+    "description": "Plugin manager for cocos2d-x",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/DrMoriarty/sdkbar"
+    },
+    "keywords": [
+        "cocos2d-x",
+        "plugin",
+        "sdkbox",
+        "ecosystem:cocos2d-x"
+    ],
+    "author": "DrMoriarty",
+    "license": "MIT License"
+}

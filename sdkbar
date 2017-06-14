@@ -1,0 +1,653 @@
+#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const child_process = require('child_process');
+const package_parser = require('./sdkbar_parser').parser;
+
+if (!String.prototype.startswith) {
+  Object.defineProperty(String.prototype, 'startswith', {
+    enumerable: false,
+    configurable: false,
+    writable: false,
+    value: function(searchString, position) {
+      position = position || 0;
+      return this.indexOf(searchString, position) === position;
+    }
+  });
+}
+
+/*******************
+ *
+ *  Console utilities
+ *
+ *******************/
+
+const Reset = "\x1b[0m";
+const Bright = "\x1b[1m";
+const Dim = "\x1b[2m";
+const Underscore = "\x1b[4m";
+const Blink = "\x1b[5m";
+const Reverse = "\x1b[7m";
+const Hidden = "\x1b[8m";
+
+const FgBlack = "\x1b[30m";
+const FgRed = "\x1b[31m";
+const FgGreen = "\x1b[32m";
+const FgYellow = "\x1b[33m";
+const FgBlue = "\x1b[34m";
+const FgMagenta = "\x1b[35m";
+const FgCyan = "\x1b[36m";
+const FgWhite = "\x1b[37m";
+
+const BgBlack = "\x1b[40m";
+const BgRed = "\x1b[41m";
+const BgGreen = "\x1b[42m";
+const BgYellow = "\x1b[43m";
+const BgBlue = "\x1b[44m";
+const BgMagenta = "\x1b[45m";
+const BgCyan = "\x1b[46m";
+const BgWhite = "\x1b[47m";
+
+function debug(str) {
+    var args = [Dim];
+    for(key in arguments) {
+        args.push(arguments[key]);
+    }
+    args.push(Reset);
+    console.log.apply(console, args);
+}
+
+function log(str) {
+    var args = [Bright];
+    for(key in arguments) {
+        args.push(arguments[key]);
+    }
+    args.push(Reset);
+    console.log.apply(console, args);
+}
+
+function warning(str) {
+    var args = [FgYellow, 'Warning:'];
+    for(key in arguments) {
+        args.push(arguments[key]);
+    }
+    args.push(Reset);
+    console.log.apply(console, args);
+}
+
+function error() {
+    var args = [FgRed, 'Error:'];
+    for(key in arguments) {
+        args.push(arguments[key]);
+    }
+    args.push(Reset);
+    console.error.apply(console, args);
+}
+
+/*******************
+ *
+ *  Config & Project 
+ *
+ *******************/
+
+var proj = null;
+var conf = null;
+var project_root = path.resolve("./");
+var install_log_list = [];
+
+function install_log(operation, arg) {
+    install_log_list.push({'op': operation, 'arg': arg});
+}
+
+function help() {
+    console.log(`SDKBAR v 0.0.1
+
+Usage: 
+sdkbar --list                    List all installed plugins
+sdkbar --install <url or path>   Install new plugin
+sdkbar --remove <plugin name>    Uninstall the installed plugin
+sdkbar --help                    This page
+`);
+}
+
+while(true) {
+    try {
+        proj = JSON.parse(fs.readFileSync(project_root+'/.cocos-project.json', 'utf8'));
+        break;
+    } catch (err) {
+        if(project_root.length >= 2) 
+            project_root = path.resolve(project_root+'/../');
+        else
+            break;
+    }
+}
+if(proj == null) {
+    console.log('Cocos project not found!');
+    help();
+    process.exit(1);
+}
+
+try {
+    conf = JSON.parse(fs.readFileSync(project_root+'/.sdkbar.json', 'utf8'));
+} catch (err) {
+    conf = {};
+}
+
+function saveConf() {
+    fs.writeFileSync(project_root+'/.sdkbar.json', JSON.stringify(conf, null, 4));
+}
+
+/*******************
+ *
+ *  Parsing command line arguments
+ *
+ *******************/
+
+var args = process.argv.slice(2);
+var command = null;
+var argument = null;
+args.forEach(function (val, index, array) {
+    if(/^--/.test(val)) {
+        command = val.substring(2);
+    } else if(command != null) {
+        argument = val;
+    } else {
+        console.error('Unknown parameter:', val);
+        help();
+        process.exit(1);
+    }
+});
+
+
+/*******************
+ *
+ *  File utilities
+ *
+ *******************/
+
+function extension(fname) {
+    return fname.slice((fname.lastIndexOf(".") - 1 >>> 0) + 2);
+}
+
+var mkdirSync = function (dirpath) {
+    try {
+        fs.mkdirSync(dirpath);
+    } catch(e) {
+        if ( e.code != 'EEXIST' ) throw e;
+    }
+}
+
+var mkdirpSync = function (dirpath) {
+    var absolute = false;
+    if(dirpath.lastIndexOf(path.sep, 0) === 0)
+        absolute = true;
+    var parts = dirpath.split(path.sep);
+    for( var i = 1; i <= parts.length; i++ ) {
+        var pp = path.join.apply(null, parts.slice(0, i));
+        if(absolute)
+            pp = path.sep + pp;
+        mkdirSync( pp );
+    }
+}
+
+function copyFileSync( source, target ) {
+    var targetFile = target;
+    //if target is a directory a new file with the same name will be created
+    if ( fs.existsSync( target ) ) {
+        if ( fs.lstatSync( target ).isDirectory() ) {
+            targetFile = path.join( target, path.basename( source ) );
+        }
+    }
+    debug('Copy file', source, target);
+    if(fs.existsSync(targetFile))
+        warning('File exist', targetFile);
+    fs.writeFileSync(targetFile, fs.readFileSync(source));
+    if(targetFile.startsWith(project_root)) {
+        targetFile = targetFile.substring(project_root.length);
+        var separator = "" + path.sep;
+        if(targetFile.startsWith(separator)) {
+            targetFile = targetFile.substring(separator.length);
+        }
+    }
+    return targetFile;
+}
+
+function copyPathSync(source, target) {
+    var result = []
+    if ( !fs.lstatSync( source ).isDirectory() ) {
+        result.push(copyFileSync(source, target));
+    } else {
+        target = path.join(target, path.basename(source));
+        debug('Copy dir', source, target);
+        mkdirpSync(target);
+        var files = fs.readdirSync(source);
+        for(file of files) {
+            var ss = path.join(source,file)
+            var stats = fs.lstatSync(ss);
+            if (stats.isDirectory()) {
+                result = result.concat(copyPathSync(ss, target));
+            } else {
+                result.push(copyFileSync(ss, target));
+            }
+        }
+    }
+    return result;
+}
+
+/*
+function lookup(dirpath, dir, process_patch, process_file, iterateLevel) {
+    iterateLevel = iterateLevel || 0;
+    var files = fs.readdirSync(dirpath+dir);
+    for(file of files) {
+        var fname = path.join(dir,file);
+        var stats = fs.lstatSync(dirpath+fname);
+        if(path.extname(file) == '.patch' && process_patch) {
+            process_patch(fname);
+        } else if (stats.isDirectory()) {
+            lookup(dirpath, fname, process_patch, process_file, iterateLevel + 1);
+        } else if (process_file) {
+            process_file(fname);
+        }
+    }
+}
+*/
+
+function removeEmptyDirs(dir) {
+    while (true) {
+        try {
+            fs.rmdirSync(dir);
+            dir = path.dirname(dir);
+        } catch (err) {
+            return;
+        }
+    }
+}
+
+/*******************
+ *
+ *  Sdkbar functions
+ *
+ *******************/
+
+function list() {
+    console.log('Installed plugins:');
+    Object.keys(conf).forEach(function(val, index, array) {
+        console.log(val, conf[val].version);
+    });
+    console.log('');
+}
+
+var functioner = {
+    config_merge: function(arg1, arg2) {
+        warning('Warning: config_merge is unimplemented yet!');
+    },
+    copy_files: function(files, from, to) {
+        debug('Copy files', files, from, to);
+        for(key in files) {
+            var src = path.join(from,files[key]);
+            var dst = path.join(to,path.basename(files[key]));
+            var dst_dir = path.dirname(dst);
+            try {
+                var copied = copyPathSync(src, to);
+                install_log('copy', copied);
+            } catch (err) {
+                error('Failed copy', src, 'to', dst);
+                error(err);
+            }
+        }
+    },
+    apply_patch: function(arg1, arg2, arg3) {
+        warning('Warning: apply_patch is unimplemented yet!');
+    },
+    xcode_add_frameworks: function(frameworks) {
+        warning('Warning: xcode_add_frameworks is unimplemented yet!');
+    },
+    xcode_add_sources: function() {
+        warning('Warning: xcode_add_sources is unimplemented yet!');
+    },
+    android_copy_jars: function() {
+        warning('Warning: android_copy_jars is unimplemented yet!');
+    },
+    android_copy_libs: function() {
+        warning('Warning: android_copy_libs is unimplemented yet!');
+    },
+    android_add_sources: function() {
+        warning('Warning: android_add_sources unimplemented yet!');
+    },
+    android_set_permissions: function() {
+        warning('Warning: android_set_permissions unimplemented yet!');
+    },
+    android_add_static_libraries: function() {
+        warning('Warning: android_add_static_libraries unimplemented yet!');
+    },
+    android_add_calls: function() {
+        warning('Warning: android_add_calls unimplemented yet!');
+    },
+    satisfies_cocos_version: function() {
+        warning('Warning: satisfies_cocos_version unimplemented yet!');
+        return false;
+    },
+    define: function(key, value) {
+        warning('Warning: define unimplemented yet!');
+    },
+    open_documentation: function() {
+        warning('Warning: open_documentation unimplemented yet!');
+    },
+    puts: function() {
+        warning('Warning: puts unimplemented yet!');
+    }
+};
+
+function script_install(plugin_path, plugin, origin, script) {
+    var prev = conf[plugin.name];
+    if(typeof prev != 'undefined' && prev != null) {
+        error('Plugin', plugin.name, 'already installed (version ', plugin.version+')');
+        error('Remove it first');
+        process.exit(1);
+    }
+    conf[plugin.name] = {
+        'name': plugin.name,
+        'version': plugin.version,
+        'origin': origin
+    };
+
+    var str_re1 = /^\'([^\']*)\'$/;
+    var str_re2 = /^\"([^\"]*)\"$/;
+    var sub_token = /^([^\.]+)\./;
+    package_parser.yy = {
+        indent: [],
+        variables: {'True': true,
+                    'False': false,
+                    'COCOS_PROJECT_TYPE': 'js',
+                    'COCOS_2DX_VERSION': '3',
+                    'SDKBOX_PACKAGE_NAME': plugin.name,
+                    'PLUGIN_PATH': plugin_path,
+                    'COCOS_RESOURCES_DIR': project_root+'/res/',
+                    'COCOS_CLASSES_DIR': project_root+'/frameworks/runtime-src/Classes/',
+                    'ANDROID_ACTIVITY_NAME': 'AppActivity',
+                    'ANDROID_MK_USES_WILDCARDS': false,
+                    'ANDROID_ACTIVITY_PATH': project_root+'/frameworks/runtime-src/proj.android-studio/app/src/org/cocos2dx/javascript/',
+                    'ANDROID_COCOS_SRC_DIR': project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/src/org/cocos2dx/lib/',
+                    'ANDROID_COCOS_PACKAGE_ROOT': project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/',
+                    'ANDROID_STUDIO_PROJECT_DIR': project_root+'/frameworks/runtime-src/proj.android-studio/',
+                    'ANDROID_PROJECT_DIR': project_root+'/frameworks/runtime-src/proj.android/',
+                    'IOS_PROJECT_DIR': project_root+'/frameworks/runtime-src/proj.ios_mac/',
+                    'sdkbar': functioner,
+                    'sdkbox': functioner},
+        resolve_name_in_scope: function(n, scope) {
+            var prototype=Object.getPrototypeOf(scope);
+            if(prototype != null && prototype[n] != null) {
+                return prototype[n].bind(scope);
+            } else if(n in scope) {
+                return scope[n];
+            } else if(sub_token.test(n)) {
+                var match = n.match(sub_token);
+                var tt = match[1];
+                var vv = this.resolve_name_in_scope(tt, scope);
+                if(vv == null) {
+                    error('Error: variable is undefined', tt);
+                //} else if (vv instanceof String || typeof vv === 'string') {
+                    // string
+                } else {
+                    // generic object
+                    var st2 = n.substring(tt.length+1);
+                    return this.resolve_name_in_scope(st2, vv);
+                }
+            }
+            error('Error: variable is undefined', n);
+            return null;
+        },
+        resolve_name: function(n) {
+            if(str_re1.test(n)) {
+                // string
+                var match = n.match(str_re1);
+                return match[1];
+            } else if(str_re2.test(n)) {
+                // string
+                var match = n.match(str_re2);
+                return match[1];
+            } else if(n instanceof Array) {
+                // resolve array elements
+                var result = [];
+                for(k in n) {
+                    result.push(this.resolve_name(n[k]));
+                }
+                return result;
+            } else {
+                var res = this.resolve_name_in_scope(n, this.variables);
+                if(res == null)
+                    return n;
+                else
+                    return res;
+            }
+        },
+        pack_value: function(v) {
+            // pack a variable value into the internal format
+            if(v === true)
+                return 'True';
+            else if(v === false)
+                return 'False';
+            else if(v instanceof String || typeof v === 'string')
+                return "'"+v+"'";
+            else
+                return v;
+        },
+        check_indent: function(i) {
+            if(this.indent.length <= 0)
+                return true;
+            var scope = this.indent[this.indent.length - 1];
+            if(scope['indent'] >= i) {
+                // out of block
+                this.indent.pop();
+                return this.check_indent(i);
+            } else if(scope['if'] === true) {
+                return true;
+            } else if(scope['if'] === false) {
+                return false;
+            } else if(scope['else'] == true) {
+                return true;
+            } else if(scope['else'] == false) {
+                return false;
+            }
+        },
+        comment: function(c) {
+            console.log('comment', c);
+        },
+        call_function: function(indent, func, args) {
+            if(this.check_indent(indent)) {
+                console.log('->', indent);
+                var processed_args = []
+                for(key in args) {
+                    processed_args.push(this.resolve_name(args[key]));
+                }
+                this.inline_call_function(func, processed_args);
+            } else {
+                console.log('->', indent, 'skip call func', func);
+            }
+            return func;
+        },
+        inline_call_function: function(func, args) {
+            console.log('call func', func, args);
+            var f = this.resolve_name(func);
+            if(typeof f === "function" || Object.prototype.toString.call(f) == '[object Function]') {
+                var result = f.apply(this, args);
+                result = this.pack_value(result);
+                return result;
+            } else {
+                error('Error: function', func, 'is undefined');
+            }
+        },
+        assign: function(indent, key, val) {
+            if(this.check_indent(indent)) {
+                console.log('->', indent);
+                val = this.resolve_name(val);
+                console.log('assign', key, val);
+                this.variables[key] = val;
+            } else {
+                console.log('->', indent, 'skip assign', key);
+            }
+            return key;
+        },
+        inline_assign: function(key, val) {
+            val = this.resolve_name(val);
+            console.log('inline assign', key, val);
+            this.variables[key] = val;
+        },
+        operation: function(op, arg1, arg2) {
+            arg1 = this.resolve_name(arg1);
+            arg2 = this.resolve_name(arg2);
+            var result = null;
+            if(op === '+') {
+                result = arg1 + arg2;
+            } else if(op === '-') {
+                result = arg1 - arg2;
+            } else if(op === '/') {
+                result = arg1 / arg2;
+            } else if(op === '*') {
+                result = arg1 * arg2;
+            } else {
+                error('Error: unknown operation', op, arg1, arg2);
+                result = arg1;
+            }
+            return this.pack_value(result);
+        },
+        logic_operation: function(op, arg1, arg2) {
+            arg1 = this.resolve_name(arg1);
+            arg2 = this.resolve_name(arg2);
+            var result = null;
+            if(op === '==') {
+                result = arg1 == arg2;
+            } else if (op === '!=') {
+                result = arg1 != arg2;
+            } else if (op === 'and') {
+                result = arg1 && arg2;
+            } else if (op === 'or') {
+                result = arg1 || arg2;
+            } else {
+                error('Error: unknown logic operation', op, arg1, arg2);
+                result = arg1;
+            }
+            console.log('Logic operation:', op, arg1, arg2, 'result:', result);
+            return this.pack_value(result);
+        },
+        if_condition: function(indent, cond) {
+            cond = this.resolve_name(cond);
+            if(!this.check_indent(indent)) {
+                console.log('->', indent, 'skip if block');
+            } else if(cond === true) {
+                console.log('->', indent);
+                console.log('if block doing');
+                this.indent.push({'if': true, 'indent': indent});
+            } else if(cond === false) {
+                console.log('->', indent);
+                console.log('if block skipping');
+                this.indent.push({'if': false, 'indent': indent});
+            } else {
+                console.log('->', indent);
+                error('Error: unexpected if condition', cond);
+            }
+            return this.pack_value(cond);
+        },
+        else_condition: function(indent) {
+            console.log('->', indent);
+            var scope = this.indent[this.indent.length-1];
+            if(scope['indent'] < indent && !this.check_indent(indent)) {
+                console.log('->', indent, 'skip else block');
+                return null;
+            }
+            while(scope['indent'] > indent) {
+                scope = this.indent.pop();
+            }
+            if(scope['indent'] == indent && 'if' in scope) {
+                var doing = !scope['if'];
+                this.indent.push({'else': doing, 'indent': indent});
+                console.log('else', doing);
+            } else {
+                error('Error: else without if');
+            }
+            return null;
+        }
+    }
+    package_parser.parse(script);
+    conf[plugin.name]['install_log'] = install_log_list;
+}
+
+function install(path) {
+    if(/^http/.test(path)) {
+        // TODO remote install
+    } else {
+        // local install
+        var plugin = null;
+        var install_script = null;
+        try {
+            plugin = JSON.parse(fs.readFileSync(path+'/package.json', 'utf8'));
+            install_script = fs.readFileSync(path+'/sdkbar.package', 'utf8');
+            console.log('Installing', plugin.name, 'version', plugin.version, 'from', path);
+            script_install(path, plugin, path, install_script);
+        } catch (err) {
+            //console.error(err);
+            try {
+                install_script = fs.readFileSync(path+'/sdkbox.package', 'utf8');
+                console.log('Installing SDKBOX plugin from', path);
+                script_install(path, {'name': 'generic-sdkbox-plugin'}, path, install_script);
+            } catch (err) {
+                error(err);
+                process.exit(1);
+            }
+        }
+    }
+}
+
+function remove(name) {
+    var cc = conf[name];
+    if(typeof cc == 'undefined' || cc == null) {
+        console.error('Plugin', name, 'not found!');
+        process.exit(1);
+    }
+    var origin = cc.origin;
+    var log = cc['install_log'];
+    if(typeof log != 'undefined' && log != null) {
+        for(key in log) {
+            var op = log[key];
+            if(op['op'] === 'copy') {
+                // undo copy file
+                var args = op['arg'];
+                for(args_key in args) {
+                    var arg = args[args_key];
+                    if(!arg.startsWith(path.sep))
+                        arg = path.join(project_root, arg);
+                    if(fs.existsSync(arg)) {
+                        fs.unlinkSync(arg);
+                    } else {
+                        warning('Warning: file not found', arg);
+                    }
+                    removeEmptyDirs(path.dirname(arg));
+                }
+            } else {
+                error('Unknown install operation:', op['op'], 'with arg:', op['arg']);
+            }
+        }
+    }
+    delete conf[name];
+}
+
+if(command === 'help') {
+    help();
+} else if(command === 'list') {
+    list();
+} else if(command === 'install') {
+    argument = path.resolve(argument);
+    install(argument);
+    saveConf();
+} else if(command === 'remove') {
+    remove(argument);
+    saveConf();
+} else if(command != null) {
+    error('Wrong command:', command);
+    help();
+    process.exit(1);
+} else {
+    error('No command!');
+    help();
+    process.exit(1);
+}
