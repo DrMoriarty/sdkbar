@@ -5,15 +5,19 @@
 %lex
 
 %s expect_indent
+%s expect_object
 
 %%
 
 \#[^\n]*                return 'COMMENT';
-/* \n[ ]+                  return 'INDENT' */
+"{"                     { this.begin('expect_object'); return '{'; }
+<expect_object>"}"      { this.popState(); return '}'; }
+<expect_object>[\s\n]+  /* skip space in object declaration */
 \n                      { this.begin('expect_indent'); return 'EOL'; }
 <expect_indent>[ ]+     { this.begin('INITIAL'); return 'INDENT'; }
 [ ]+                    /*  skip space */
 [0-9]+("."[0-9]+)?\b    return 'NUMBER';
+\'\'\'[^\']+\'\'\'      return 'MULTILINE_STRING'
 \"[^\"]*\"              return 'STRING';
 \'[^\']*\'              return 'STRING';
 "*"                     return '*'
@@ -61,9 +65,6 @@ comment
 
 eol
     : EOL
-/*      { yy.set_indent(0); $$ = $1; }
-    | INDENT
-      { yy.set_indent(@1.last_column-1); $$ = $1; } */
     ;
 
 variable
@@ -80,8 +81,35 @@ array
       { $$ = $2; }
     ;
 
-operand
+string
     : STRING
+    | MULTILINE_STRING
+    ;
+
+object_start
+    : '{'
+    { this.current_object = {}; $$ = $1; }
+    ;
+
+object_end
+    : '}'
+    { var ob = this.current_object; this.current_object = null; $$ = ob; }
+    ;
+
+object_declaration
+    : string ':' string
+    { var key = $1.substring(1, $1.length-1); this.current_object[key] = $3; $$ = this.current_object; }
+    | string ':' string ',' object_declaration
+    { var key = $1.substring(1, $1.length-1); this.current_object[key] = $3; $$ = this.current_object; }
+    ;
+
+object
+    : object_start object_declaration object_end
+    { $$ = $3; }
+    ;
+
+operand
+    : string
     | NUMBER
     | TRUE
     | FALSE
@@ -94,6 +122,7 @@ operand
 
 expression
     : operand
+    | object
     | expression AND expression
       { $$ = yy.logic_operation($2, $1, $3); }
     | expression OR expression
@@ -179,10 +208,10 @@ line
     | else_statement eol
     | assignment eol
     | function_call eol
+    | eol
     ;
 
 translation_unit
     : line translation_unit
-    | eol translation_unit
     | EOF
     ;

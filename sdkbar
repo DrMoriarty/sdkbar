@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const fs = require('fs');
+const et = require('elementtree');
 const path = require('path');
 const child_process = require('child_process');
 const package_parser = require('./sdkbar_parser').parser;
@@ -122,7 +123,7 @@ while(true) {
     }
 }
 if(proj == null) {
-    console.log('Cocos project not found!');
+    error('Cocos project not found!');
     help();
     process.exit(1);
 }
@@ -265,6 +266,55 @@ function removeEmptyDirs(dir) {
 
 /*******************
  *
+ *  XML utilities
+ *
+ *******************/
+
+function xml_append(fname, parent, tag, key, xml) {
+    var data = fs.readFileSync(fname).toString();
+    var etree = et.parse(data);
+    // check if tag already exist
+    var xpath = parent+'/'+tag;
+    if(key !== null && typeof key !== 'undefined') 
+        xpath = xpath + '[@'+key+']';
+    var existed = etree.find(xpath);
+    if(existed !== null && typeof existed !== 'undefined') {
+        warning('Tag already exist:', et.tostring(existed, {'xml_declaration': false, 'indent': true}));
+    } else {
+        var parent = etree.find(parent);
+        var node = et.parse(xml);
+        parent.append(node._root);
+        //console.log(et.tostring(parent, {'xml_declaration': false, 'indent': true}));
+        debug('Append XML tag:', et.tostring(node._root, {'xml_declaration': false, 'indent': true}));
+    }
+    var xml = etree.write({'xml_declaration': true, 'indent': true, 'encoding': 'UTF-8'});
+    fs.writeFileSync(fname, xml);
+    return xpath;
+}
+
+function xml_remove(fname, parent, xpath) {
+    var data = fs.readFileSync(fname).toString();
+    var etree = et.parse(data);
+    var parent = etree.find(parent);
+    var nodes = etree.findall(xpath);
+    if(nodes.length > 0) {
+        for(key in nodes) {
+            var node = nodes[key];
+            var ind = parent.getchildren().indexOf(node);
+            if(ind >= 0)
+                parent.delItem(ind);
+            else
+                warning('Xml element not found:', xpath);
+        }
+    } else {
+        warning('Xml elements not found:', xpath);
+    }
+    var xml = etree.write({'xml_declaration': true, 'indent': true, 'encoding': 'UTF-8'});
+    fs.writeFileSync(fname, xml);
+}
+
+/*******************
+ *
  *  Sdkbar functions
  *
  *******************/
@@ -278,6 +328,7 @@ function list() {
 }
 
 var functioner = {
+    /************** SDKBOX methods **************/
     config_merge: function(arg1, arg2) {
         warning('Warning: config_merge is unimplemented yet!');
     },
@@ -323,6 +374,15 @@ var functioner = {
     android_add_calls: function() {
         warning('Warning: android_add_calls unimplemented yet!');
     },
+    android_add_xml_item: function(obj) {
+        var xpath = obj['path'],
+            tag = obj['tag'],
+            key = obj['key'],
+            xml = obj['xml'];
+        var file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/AndroidManifest.xml');
+        var child = xml_append(file, xpath, tag, 'android:name=\''+key+'\'', xml);
+        install_log('xml', {'file': 'frameworks/runtime-src/proj.android-studio/app/AndroidManifest.xml', 'parent': xpath, 'xpath': child});
+    },
     satisfies_cocos_version: function() {
         warning('Warning: satisfies_cocos_version unimplemented yet!');
         return false;
@@ -336,6 +396,9 @@ var functioner = {
     puts: function() {
         warning('Warning: puts unimplemented yet!');
     }
+    
+    /************** SdkBar methods **************/
+    
 };
 
 function script_install(plugin_path, plugin, origin, script) {
@@ -353,6 +416,7 @@ function script_install(plugin_path, plugin, origin, script) {
 
     var str_re1 = /^\'([^\']*)\'$/;
     var str_re2 = /^\"([^\"]*)\"$/;
+    var str_re3 = /^\'\'\'([^\']+)\'\'\'$/;
     var sub_token = /^([^\.]+)\./;
     package_parser.yy = {
         indent: [],
@@ -398,7 +462,11 @@ function script_install(plugin_path, plugin, origin, script) {
             return null;
         },
         resolve_name: function(n) {
-            if(str_re1.test(n)) {
+            if(str_re3.test(n)) {
+                // multiline string
+                var match = n.match(str_re3);
+                return match[1];
+            } else if(str_re1.test(n)) {
                 // string
                 var match = n.match(str_re1);
                 return match[1];
@@ -411,6 +479,13 @@ function script_install(plugin_path, plugin, origin, script) {
                 var result = [];
                 for(k in n) {
                     result.push(this.resolve_name(n[k]));
+                }
+                return result;
+            } else if(n !== null && typeof n === 'object') {
+                // object (dictionary)
+                var result = {};
+                for(k in n) {
+                    result[k] = this.resolve_name(n[k]);
                 }
                 return result;
             } else {
@@ -580,18 +655,26 @@ function install(path) {
         var plugin = null;
         var install_script = null;
         try {
-            plugin = JSON.parse(fs.readFileSync(path+'/package.json', 'utf8'));
-            install_script = fs.readFileSync(path+'/sdkbar.package', 'utf8');
-            console.log('Installing', plugin.name, 'version', plugin.version, 'from', path);
-            script_install(path, plugin, path, install_script);
-        } catch (err) {
-            //console.error(err);
-            try {
+            if(fs.existsSync(path+'/package.json') && fs.existsSync(path+'/sdkbar.package')) {
+                plugin = JSON.parse(fs.readFileSync(path+'/package.json', 'utf8'));
+                install_script = fs.readFileSync(path+'/sdkbar.package', 'utf8');
+                console.log('Installing', plugin.name, 'version', plugin.version, 'from', path);
+                script_install(path, plugin, path, install_script);
+            } else {
                 install_script = fs.readFileSync(path+'/sdkbox.package', 'utf8');
                 console.log('Installing SDKBOX plugin from', path);
                 script_install(path, {'name': 'generic-sdkbox-plugin'}, path, install_script);
-            } catch (err) {
+            }
+        } catch (err) {
+            if(err["code"] === "ENOENT") {
+                // no such file
                 error(err);
+                process.exit(1);
+            } else {
+                if(typeof err['message'] !== 'undefined')
+                    error(err['message'])
+                else
+                    error(err);
                 process.exit(1);
             }
         }
@@ -623,6 +706,14 @@ function remove(name) {
                     }
                     removeEmptyDirs(path.dirname(arg));
                 }
+            } else if(op['op'] === 'xml') {
+                var arg = op['arg'];
+                var file = arg['file'];
+                var parent = arg['parent'];
+                var xpath = arg['xpath'];
+                if(!file.startsWith(path.sep))
+                    file = path.join(project_root, file);
+                xml_remove(file, parent, xpath);
             } else {
                 error('Unknown install operation:', op['op'], 'with arg:', op['arg']);
             }
