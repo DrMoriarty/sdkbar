@@ -395,10 +395,30 @@ var functioner = {
     },
     puts: function() {
         warning('Warning: puts unimplemented yet!');
-    }
+    },
     
     /************** SdkBar methods **************/
-    
+    appDelegateInject: function(params) {
+        var fname = path.join(project_root, 'frameworks/runtime-src/Classes/AppDelegate.cpp');
+        var data = fs.readFileSync(fname).toString();
+        var marker = params['marker'];
+        var startMarker = '//BEGIN_'+marker+'\n';
+        var endMarker = '//END_'+marker+'\n';
+        if('ios' in params) {
+            var include = params['ios']['include'];
+            var func = params['ios']['function'];
+            include = '#if (CC_TARGET_PLATFORM == CC_PLATFORM_IOS)\n#include "'+include+'"\n#endif\n';
+            func = '#if (CC_TARGET_PLATFORM == CC_PLATFORM_IOS)\n    sc->addRegisterCallback('+func+');\n#endif\n';
+        }
+        if('android' in params) {
+            var include = params['android']['include'];
+            var func = params['android']['function'];
+            include = '#if (CC_TARGET_PLATFORM == CC_PLATFORM_ANDROID)\n#include "'+include+'"\n#endif\n';
+            func = '#if (CC_TARGET_PLATFORM == CC_PLATFORM_ANDROID)\n    sc->addRegisterCallback('+func+');\n#endif\n';
+        }
+        fs.writeFileSync(fname, data);
+        install_log('inject', {'file': 'frameworks/runtime-src/Classes/AppDelegate.cpp', 're': '\/\/BEGIN_'+marker+'[\s\S]*\/\/END_'+marker});
+    }
 };
 
 function script_install(plugin_path, plugin, origin, script) {
@@ -414,30 +434,95 @@ function script_install(plugin_path, plugin, origin, script) {
         'origin': origin
     };
 
+    var default_scope = {
+        'print': console.log,
+        'True': true,
+        'False': false,
+        'COCOS_PROJECT_TYPE': 'js',
+        'COCOS_2DX_VERSION': '3',
+        'SDKBOX_PACKAGE_NAME': plugin.name,
+        'PLUGIN_PATH': plugin_path,
+        'COCOS_RESOURCES_DIR': project_root+'/res/',
+        'COCOS_CLASSES_DIR': project_root+'/frameworks/runtime-src/Classes/',
+        'ANDROID_ACTIVITY_NAME': 'AppActivity',
+        'ANDROID_MK_USES_WILDCARDS': false,
+        'ANDROID_ACTIVITY_PATH': project_root+'/frameworks/runtime-src/proj.android-studio/app/src/org/cocos2dx/javascript/',
+        'ANDROID_COCOS_SRC_DIR': project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/src/org/cocos2dx/lib/',
+        'ANDROID_COCOS_PACKAGE_ROOT': project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/',
+        'ANDROID_STUDIO_PROJECT_DIR': project_root+'/frameworks/runtime-src/proj.android-studio/',
+        'ANDROID_PROJECT_DIR': project_root+'/frameworks/runtime-src/proj.android/',
+        'IOS_PROJECT_DIR': project_root+'/frameworks/runtime-src/proj.ios_mac/',
+        'sdkbar': functioner,
+        'sdkbox': functioner
+    }
+    var operators = {
+        'IF': function(cond, block1, block2) {
+            debug('if', cond);
+            var res = this.do_command(cond);
+            if(res === true) {
+                this.do_block(block1);
+            } else if(typeof block2 !== 'undefined' && block2 !== null) {
+                this.do_block(block2);
+            }
+        },
+        'AND': function(arg1, arg2) {
+            arg1 = this.do_command(arg1);
+            arg2 = this.do_command(arg2);
+            return arg1 && arg2;
+        },
+        'OR': function(arg1, arg2) {
+            arg1 = this.do_command(arg1);
+            arg2 = this.do_command(arg2);
+            debug('or', arg1, arg2);
+            return arg1 || arg2;
+        },
+        'EQ': function(arg1, arg2) {
+            arg1 = this.do_command(arg1);
+            arg2 = this.do_command(arg2);
+            return arg1 === arg2;
+        },
+        'NE': function(arg1, arg2) {
+            arg1 = this.do_command(arg1);
+            arg2 = this.do_command(arg2);
+            return arg1 !== arg2;
+        },
+        'ADD': function(arg1, arg2) {
+            arg1 = this.do_command(arg1);
+            arg2 = this.do_command(arg2);
+            return arg1 + arg2;
+        },
+        'SUB': function(arg1, arg2) {
+            arg1 = this.do_command(arg1);
+            arg2 = this.do_command(arg2);
+            return arg1 - arg2;
+        },
+        'MUL': function(arg1, arg2) {
+            arg1 = this.do_command(arg1);
+            arg2 = this.do_command(arg2);
+            return arg1 * arg2;
+        },
+        'DIV': function(arg1, arg2) {
+            arg1 = this.do_command(arg1);
+            arg2 = this.do_command(arg2);
+            return arg1 / arg2;
+        },
+        'ASSIGN': function(arg1, arg2) {
+            arg2 = this.do_command(arg2);
+            debug(arg1, '=', arg2);
+            default_scope[arg1] = arg2;
+            return arg1;
+        }
+    }
+
     var str_re1 = /^\'([^\']*)\'$/;
     var str_re2 = /^\"([^\"]*)\"$/;
     var str_re3 = /^\'\'\'([^\']+)\'\'\'$/;
+    var int_re = /[0-9]+/;
     var sub_token = /^([^\.]+)\./;
-    package_parser.yy = {
+    var yy = {
+        result: [],
         indent: [],
-        variables: {'True': true,
-                    'False': false,
-                    'COCOS_PROJECT_TYPE': 'js',
-                    'COCOS_2DX_VERSION': '3',
-                    'SDKBOX_PACKAGE_NAME': plugin.name,
-                    'PLUGIN_PATH': plugin_path,
-                    'COCOS_RESOURCES_DIR': project_root+'/res/',
-                    'COCOS_CLASSES_DIR': project_root+'/frameworks/runtime-src/Classes/',
-                    'ANDROID_ACTIVITY_NAME': 'AppActivity',
-                    'ANDROID_MK_USES_WILDCARDS': false,
-                    'ANDROID_ACTIVITY_PATH': project_root+'/frameworks/runtime-src/proj.android-studio/app/src/org/cocos2dx/javascript/',
-                    'ANDROID_COCOS_SRC_DIR': project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/src/org/cocos2dx/lib/',
-                    'ANDROID_COCOS_PACKAGE_ROOT': project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/',
-                    'ANDROID_STUDIO_PROJECT_DIR': project_root+'/frameworks/runtime-src/proj.android-studio/',
-                    'ANDROID_PROJECT_DIR': project_root+'/frameworks/runtime-src/proj.android/',
-                    'IOS_PROJECT_DIR': project_root+'/frameworks/runtime-src/proj.ios_mac/',
-                    'sdkbar': functioner,
-                    'sdkbox': functioner},
+        scope: default_scope,
         resolve_name_in_scope: function(n, scope) {
             var prototype=Object.getPrototypeOf(scope);
             if(prototype != null && prototype[n] != null) {
@@ -448,17 +533,12 @@ function script_install(plugin_path, plugin, origin, script) {
                 var match = n.match(sub_token);
                 var tt = match[1];
                 var vv = this.resolve_name_in_scope(tt, scope);
-                if(vv == null) {
-                    error('Error: variable is undefined', tt);
-                //} else if (vv instanceof String || typeof vv === 'string') {
-                    // string
-                } else {
+                if(vv != null) {
                     // generic object
                     var st2 = n.substring(tt.length+1);
                     return this.resolve_name_in_scope(st2, vv);
                 }
             }
-            error('Error: variable is undefined', n);
             return null;
         },
         resolve_name: function(n) {
@@ -474,6 +554,9 @@ function script_install(plugin_path, plugin, origin, script) {
                 // string
                 var match = n.match(str_re2);
                 return match[1];
+            } else if(int_re.test(n)) {
+                // integer
+                return parseInt(n);
             } else if(n instanceof Array) {
                 // resolve array elements
                 var result = [];
@@ -489,161 +572,62 @@ function script_install(plugin_path, plugin, origin, script) {
                 }
                 return result;
             } else {
-                var res = this.resolve_name_in_scope(n, this.variables);
-                if(res == null)
+                var res = this.resolve_name_in_scope(n, this.scope);
+                if(res == null) {
+                    error('variable is undefined', n);
                     return n;
-                else
+                } else {
                     return res;
-            }
-        },
-        pack_value: function(v) {
-            // pack a variable value into the internal format
-            if(v === true)
-                return 'True';
-            else if(v === false)
-                return 'False';
-            else if(v instanceof String || typeof v === 'string')
-                return "'"+v+"'";
-            else
-                return v;
-        },
-        check_indent: function(i) {
-            if(this.indent.length <= 0)
-                return true;
-            var scope = this.indent[this.indent.length - 1];
-            if(scope['indent'] >= i) {
-                // out of block
-                this.indent.pop();
-                return this.check_indent(i);
-            } else if(scope['if'] === true) {
-                return true;
-            } else if(scope['if'] === false) {
-                return false;
-            } else if(scope['else'] == true) {
-                return true;
-            } else if(scope['else'] == false) {
-                return false;
-            }
-        },
-        comment: function(c) {
-            console.log('comment', c);
-        },
-        call_function: function(indent, func, args) {
-            if(this.check_indent(indent)) {
-                console.log('->', indent);
-                var processed_args = []
-                for(key in args) {
-                    processed_args.push(this.resolve_name(args[key]));
                 }
-                this.inline_call_function(func, processed_args);
-            } else {
-                console.log('->', indent, 'skip call func', func);
-            }
-            return func;
-        },
-        inline_call_function: function(func, args) {
-            console.log('call func', func, args);
-            var f = this.resolve_name(func);
-            if(typeof f === "function" || Object.prototype.toString.call(f) == '[object Function]') {
-                var result = f.apply(this, args);
-                result = this.pack_value(result);
-                return result;
-            } else {
-                error('Error: function', func, 'is undefined');
             }
         },
-        assign: function(indent, key, val) {
-            if(this.check_indent(indent)) {
-                console.log('->', indent);
-                val = this.resolve_name(val);
-                console.log('assign', key, val);
-                this.variables[key] = val;
-            } else {
-                console.log('->', indent, 'skip assign', key);
-            }
-            return key;
+        ast: function(ast) {
+            yy.result = ast;
         },
-        inline_assign: function(key, val) {
-            val = this.resolve_name(val);
-            console.log('inline assign', key, val);
-            this.variables[key] = val;
-        },
-        operation: function(op, arg1, arg2) {
-            arg1 = this.resolve_name(arg1);
-            arg2 = this.resolve_name(arg2);
+        do_block: function(block) {
             var result = null;
-            if(op === '+') {
-                result = arg1 + arg2;
-            } else if(op === '-') {
-                result = arg1 - arg2;
-            } else if(op === '/') {
-                result = arg1 / arg2;
-            } else if(op === '*') {
-                result = arg1 * arg2;
-            } else {
-                error('Error: unknown operation', op, arg1, arg2);
-                result = arg1;
+            for(key in block) {
+                var command = block[key];
+                result = this.do_command(command);
             }
-            return this.pack_value(result);
+            return result;
         },
-        logic_operation: function(op, arg1, arg2) {
-            arg1 = this.resolve_name(arg1);
-            arg2 = this.resolve_name(arg2);
-            var result = null;
-            if(op === '==') {
-                result = arg1 == arg2;
-            } else if (op === '!=') {
-                result = arg1 != arg2;
-            } else if (op === 'and') {
-                result = arg1 && arg2;
-            } else if (op === 'or') {
-                result = arg1 || arg2;
+        do_command: function(command) {
+            if(command instanceof Array) {
+                // function with args
+                var cmd = command.shift();
+                var args = command;
+                var need_resolve = false;
+                var fn = this.resolve_name_in_scope(cmd, operators);
+                if(fn == null) {
+                    fn = this.resolve_name(cmd);
+                    need_resolve = true;
+                }
+                if(typeof fn === "function" || Object.prototype.toString.call(fn) == '[object Function]') {
+                    if(need_resolve) {
+                        var processed_args = []
+                        for(key in args) {
+                            processed_args.push(this.resolve_name(args[key]));
+                        }
+                        args = processed_args;
+                    }
+                    var result = fn.apply(this, args);
+                    return result;
+                } else {
+                    error('function', fn, 'is undefined');
+                    return null;
+                }
             } else {
-                error('Error: unknown logic operation', op, arg1, arg2);
-                result = arg1;
+                // variable or value
+                return this.resolve_name(command);
             }
-            console.log('Logic operation:', op, arg1, arg2, 'result:', result);
-            return this.pack_value(result);
-        },
-        if_condition: function(indent, cond) {
-            cond = this.resolve_name(cond);
-            if(!this.check_indent(indent)) {
-                console.log('->', indent, 'skip if block');
-            } else if(cond === true) {
-                console.log('->', indent);
-                console.log('if block doing');
-                this.indent.push({'if': true, 'indent': indent});
-            } else if(cond === false) {
-                console.log('->', indent);
-                console.log('if block skipping');
-                this.indent.push({'if': false, 'indent': indent});
-            } else {
-                console.log('->', indent);
-                error('Error: unexpected if condition', cond);
-            }
-            return this.pack_value(cond);
-        },
-        else_condition: function(indent) {
-            console.log('->', indent);
-            var scope = this.indent[this.indent.length-1];
-            if(scope['indent'] < indent && !this.check_indent(indent)) {
-                console.log('->', indent, 'skip else block');
-                return null;
-            }
-            while(scope['indent'] > indent) {
-                scope = this.indent.pop();
-            }
-            if(scope['indent'] == indent && 'if' in scope) {
-                var doing = !scope['if'];
-                this.indent.push({'else': doing, 'indent': indent});
-                console.log('else', doing);
-            } else {
-                error('Error: else without if');
-            }
-            return null;
         }
     }
+    package_parser.yy = yy;
     package_parser.parse(script);
+    var ast = yy.result;
+    debug('Get config AST:', JSON.stringify(ast));
+    yy.do_block(ast);
     conf[plugin.name]['install_log'] = install_log_list;
 }
 
