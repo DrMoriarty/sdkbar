@@ -402,23 +402,68 @@ var functioner = {
         var fname = path.join(project_root, 'frameworks/runtime-src/Classes/AppDelegate.cpp');
         var data = fs.readFileSync(fname).toString();
         var marker = params['marker'];
-        var startMarker = '//BEGIN_'+marker+'\n';
+        var startMarker = '\n//BEGIN_'+marker+'\n';
         var endMarker = '//END_'+marker+'\n';
         if('ios' in params) {
             var include = params['ios']['include'];
             var func = params['ios']['function'];
             include = '#if (CC_TARGET_PLATFORM == CC_PLATFORM_IOS)\n#include "'+include+'"\n#endif\n';
             func = '#if (CC_TARGET_PLATFORM == CC_PLATFORM_IOS)\n    sc->addRegisterCallback('+func+');\n#endif\n';
+            data = data.replace('\nUSING_NS_CC;', startMarker+include+endMarker+'\nUSING_NS_CC;');
+            data = data.replace('\n    sc->start();', startMarker+func+endMarker+'\n    sc->start();');
         }
         if('android' in params) {
             var include = params['android']['include'];
             var func = params['android']['function'];
             include = '#if (CC_TARGET_PLATFORM == CC_PLATFORM_ANDROID)\n#include "'+include+'"\n#endif\n';
             func = '#if (CC_TARGET_PLATFORM == CC_PLATFORM_ANDROID)\n    sc->addRegisterCallback('+func+');\n#endif\n';
+            data = data.replace('\nUSING_NS_CC;', startMarker+include+endMarker+'\nUSING_NS_CC;');
+            data = data.replace('\n    sc->start();', startMarker+func+endMarker+'\n    sc->start();');
         }
         fs.writeFileSync(fname, data);
-        install_log('inject', {'file': 'frameworks/runtime-src/Classes/AppDelegate.cpp', 're': '\/\/BEGIN_'+marker+'[\s\S]*\/\/END_'+marker});
-    }
+        install_log('inject', {'file': 'frameworks/runtime-src/Classes/AppDelegate.cpp', 're': '\n\\/\\/BEGIN_'+marker+'[\\s\\S]*?\\/\\/END_'+marker+'\n'});
+    },
+    gradleProject: function(projname, projpath) {
+        var settings_file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/settings.gradle');
+        var injection = `\ninclude ':${projname}'\nproject(':${projname}').projectDir = new File(settingsDir, '${projpath}')\n`;
+        var data = fs.readFileSync(settings_file).toString();
+        data += injection;
+        fs.writeFileSync(settings_file, data);
+        install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/settings.gradle', 'str': injection});
+        
+        var build_file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/build.gradle');
+        data = fs.readFileSync(build_file).toString();
+        var injection2 = `    compile project(':${projname}')\n`;
+        data = data.replace('dependencies {\n', 'dependencies {\n'+injection2);
+        fs.writeFileSync(build_file, data);
+        install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/app/build.gradle', 'str': injection2});
+    },
+    androidJni: function(files) {
+        var injection = '';
+        for(key in files) {
+            injection = injection + files[key] + ' \\\n';
+        }
+        var fname = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk');
+        var data = fs.readFileSync(fname).toString();
+        data = data.replace('../../../Classes/AppDelegate.cpp \\\n', '../../../Classes/AppDelegate.cpp \\\n'+injection);
+        fs.writeFileSync(fname, data);
+        install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk', 'str': injection});
+    },
+    add_xml_item: function(file, obj) {
+        var xpath = obj['path'],
+            tag = obj['tag'],
+            key = obj['key'],
+            xml = obj['xml'];
+        var child = xml_append(file, xpath, tag, 'name=\''+key+'\'', xml);
+        if(file.startsWith(project_root)) {
+            file = file.substring(project_root.length);
+            var separator = "" + path.sep;
+            if(file.startsWith(separator)) {
+                file = file.substring(separator.length);
+            }
+        }
+        install_log('xml', {'file': file, 'parent': xpath, 'xpath': child});
+    },
 };
 
 function script_install(plugin_path, plugin, origin, script) {
@@ -542,7 +587,15 @@ function script_install(plugin_path, plugin, origin, script) {
             return null;
         },
         resolve_name: function(n) {
-            if(str_re3.test(n)) {
+            //debug('Resolve', n, typeof n);
+            if(n instanceof Array) {
+                // resolve array elements
+                var result = [];
+                for(k in n) {
+                    result.push(this.resolve_name(n[k]));
+                }
+                return result;
+            } else if(str_re3.test(n)) {
                 // multiline string
                 var match = n.match(str_re3);
                 return match[1];
@@ -557,13 +610,6 @@ function script_install(plugin_path, plugin, origin, script) {
             } else if(int_re.test(n)) {
                 // integer
                 return parseInt(n);
-            } else if(n instanceof Array) {
-                // resolve array elements
-                var result = [];
-                for(k in n) {
-                    result.push(this.resolve_name(n[k]));
-                }
-                return result;
             } else if(n !== null && typeof n === 'object') {
                 // object (dictionary)
                 var result = {};
@@ -596,6 +642,11 @@ function script_install(plugin_path, plugin, origin, script) {
             if(command instanceof Array) {
                 // function with args
                 var cmd = command.shift();
+                if(cmd.startsWith('"') || cmd.startsWith("'")) {
+                    // constant string detected, so process as a regular array
+                    command.unshift(cmd);
+                    return this.resolve_name(command);
+                }
                 var args = command;
                 var need_resolve = false;
                 var fn = this.resolve_name_in_scope(cmd, operators);
@@ -607,10 +658,11 @@ function script_install(plugin_path, plugin, origin, script) {
                     if(need_resolve) {
                         var processed_args = []
                         for(key in args) {
-                            processed_args.push(this.resolve_name(args[key]));
+                            processed_args.push(this.do_command(args[key]));
                         }
                         args = processed_args;
                     }
+                    //debug('Function', cmd, args);
                     var result = fn.apply(this, args);
                     return result;
                 } else {
@@ -650,6 +702,7 @@ function install(path) {
                 script_install(path, {'name': 'generic-sdkbox-plugin'}, path, install_script);
             }
         } catch (err) {
+            error(err.stack);
             if(err["code"] === "ENOENT") {
                 // no such file
                 error(err);
@@ -657,8 +710,9 @@ function install(path) {
             } else {
                 if(typeof err['message'] !== 'undefined')
                     error(err['message'])
-                else
+                else {
                     error(err);
+                }
                 process.exit(1);
             }
         }
@@ -691,6 +745,7 @@ function remove(name) {
                     removeEmptyDirs(path.dirname(arg));
                 }
             } else if(op['op'] === 'xml') {
+                // remove xml node by xpath
                 var arg = op['arg'];
                 var file = arg['file'];
                 var parent = arg['parent'];
@@ -698,6 +753,25 @@ function remove(name) {
                 if(!file.startsWith(path.sep))
                     file = path.join(project_root, file);
                 xml_remove(file, parent, xpath);
+            } else if(op['op'] === 'inject') {
+                // remove source file injection
+                var arg = op['arg'];
+                var file = arg['file'];
+                var fname = path.join(project_root, file);
+                var data = fs.readFileSync(fname).toString();
+                if('re' in arg) {
+                    var re = arg['re'];
+                    var pattern = new RegExp(re, 'g');
+                    debug('remove inject', re, pattern);
+                    data = data.replace(pattern, '');
+                } else if('str' in arg) {
+                    var pattern = arg['str'];
+                    debug('remove inject', pattern);
+                    data = data.replace(pattern, '');
+                } else {
+                    error('unknown inject argument', arg);
+                }
+                fs.writeFileSync(fname, data);
             } else {
                 error('Unknown install operation:', op['op'], 'with arg:', op['arg']);
             }
