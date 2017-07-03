@@ -8,6 +8,7 @@ const url = require('url');
 const Q = require('q');
 const unzip = require('unzip');
 const nodegit = require('nodegit');
+const sync = require('sync');
 
 if (!String.prototype.startswith) {
   Object.defineProperty(String.prototype, 'startswith', {
@@ -111,6 +112,8 @@ Usage:
 sdkbar --list                    List all installed plugins
 sdkbar --install <url or path>   Install new plugin
 sdkbar --remove <plugin name>    Uninstall the installed plugin
+sdkbar --update <plugin name>    Update the plugin
+sdkbar --updateall               Update all installed plugins
 sdkbar --help                    This page
 `);
 }
@@ -165,6 +168,30 @@ args.forEach(function (val, index, array) {
     }
 });
 
+function compareVersions(v1, v2) {
+    var vv1 = v1.split('.');
+    var vv2 = v2.split('.');
+    var ind = 0;
+    while(true) {
+        if(ind >= vv1.length && ind < vv2.length) {
+            return 1;
+        } else if(ind < vv1.length && ind >= vv2.length) {
+            return -1;
+        } else if(ind >= vv1.length && ind >= vv2.length) {
+            return 0;
+        } else {
+            var i1 = parseInt(vv1[ind]);
+            var i2 = parseInt(vv2[ind]);
+            if(i1 > i2) {
+                return -1;
+            } else if(i1 < i2) {
+                return 1;
+            } else {
+                ind += 1;
+            }
+        }
+    }
+}
 
 /*******************
  *
@@ -736,48 +763,57 @@ function script_install(plugin_path, plugin, origin, script) {
     conf[plugin.name]['install_log'] = install_log_list;
 }
 
+function get_remote_plugin(uri, callback) {
+    // remote install
+    var cache = path.join(process.env.HOME, '.sdkbar/cache');
+    mkdirpSync(cache);
+    // clean cache directory
+    fs.readdirSync(cache).forEach(function(file, index){
+        removeRecursively(path.join(cache, file));
+    });
+    if(/\.zip$/.test(uri)) {
+        // download zip archive
+        debug('Download zip archive:', uri);
+        var fname = path.join(cache, 'plugin.zip');
+        download(uri, fname).then(function(result) {
+            debug('File downloaded:', fname);
+            fs.createReadStream(fname).pipe(unzip.Extract({ path: cache })).on('close', function() {
+                fs.unlinkSync(fname);
+                var files = fs.readdirSync(cache);
+                if(files.length >= 1) {
+                    var newpath = path.join(cache, files[0]);
+                    callback(null, newpath);
+                } else {
+                    callback('Plugin content not found', null);
+                }
+            });
+        }, function(err) {
+            callback(err, null);
+        });
+    } else {
+        // try to clone git repo
+        debug('Clone git repo:', uri);
+        nodegit.Clone(uri, path.join(cache, path.basename(uri)), {}).then(function (repo) {
+            callback(null, repo.workdir());
+        }).catch(function (err) {
+            callback(err, null);
+        });
+    }
+}
+
 function install(installpath, origin) {
     if(/^http/.test(installpath)) {
         // remote install
-        var cache = path.join(process.env.HOME, '.sdkbar/cache');
-        mkdirpSync(cache);
-        // clean cache directory
-        fs.readdirSync(cache).forEach(function(file, index){
-            removeRecursively(path.join(cache, file));
-        });
-        if(/\.zip$/.test(installpath)) {
-            // download zip archive
-            debug('Download zip archive:', installpath);
-            var fname = path.join(cache, 'plugin.zip');
-            download(installpath, fname).then(function(result) {
-                debug('File downloaded:', fname);
-                fs.createReadStream(fname).pipe(unzip.Extract({ path: cache })).on('close', function() {
-                    fs.unlinkSync(fname);
-                    var files = fs.readdirSync(cache);
-                    if(files.length >= 1) {
-                        var newpath = path.join(cache, files[0]);
-                        debug('Ready to install downloaded plugin:', newpath);
-                        install(newpath, installpath);
-                    } else {
-                        error('Plugin content not found');
-                        process.exit(1);
-                    }
-                });
-            }, function(err) {
-                error('File downloading error:', err);
-                process.exit(1);
-            });
-        } else {
-            // try to clone git repo
-            debug('Clone git repo:', installpath);
-            nodegit.Clone(installpath, path.join(cache, path.basename(installpath)), {}).then(function (repo) {
-                debug("Cloned " + installpath + " to " + repo.workdir());
-                install(repo.workdir(), installpath);
-            }).catch(function (err) {
+        sync(function() {
+            try {
+                var dir = get_remote_plugin.sync(null, installpath);
+                debug('Ready to install downloaded plugin:', dir);
+                install(dir, installpath);
+            } catch(err) {
                 error(err);
                 process.exit(1);
-            });
-        }
+            }
+        });
     } else {
         // local install
         var plugin = null;
@@ -787,6 +823,17 @@ function install(installpath, origin) {
             if(fs.existsSync(installpath+'/package.json') && fs.existsSync(installpath+'/sdkbar.package')) {
                 plugin = JSON.parse(fs.readFileSync(installpath+'/package.json', 'utf8'));
                 install_script = fs.readFileSync(installpath+'/sdkbar.package', 'utf8');
+                var prev = conf[plugin.name];
+                if(typeof prev != 'undefined' && prev != null) {
+                    if(compareVersions(prev.version, plugin.version) > 0) {
+                        // try to update
+                        debug('Update', prev.name, 'from version', prev.version, 'to', plugin.version);
+                        remove(prev.name);
+                    } else {
+                        error('Skip already installed plugin:', plugin.name, plugin.version);
+                        return;
+                    }
+                }
                 console.log('Installing', plugin.name, 'version', plugin.version, 'from', installpath);
                 script_install(installpath, plugin, orgn, install_script);
             } else {
@@ -875,6 +922,33 @@ function remove(name) {
     saveConf();
 }
 
+function update(name) {
+    var internal_update = function(pluginname) {
+        var cc = conf[pluginname];
+        if(typeof cc == 'undefined' || cc == null) {
+            console.error('Plugin', pluginname, 'not found!');
+            process.exit(1);
+        }
+        var origin = cc.origin;
+        if(/^http/.test(origin)) {
+            install(origin);
+            //get_remote_plugin(origin, function(dir) {
+            //});
+        } else {
+            debug('Skip local installed plugin', pluginname);
+        }
+    }
+
+    if(typeof name === 'undefined' || name === null) {
+        // update all
+        for(var key in conf) {
+            internal_update(key);
+        }
+    } else {
+        internal_update(name);
+    }
+}
+
 if(command === 'help') {
     help();
 } else if(command === 'list') {
@@ -889,6 +963,12 @@ if(command === 'help') {
     install(argument);
 } else if(command === 'remove') {
     remove(argument);
+} else if(command === 'update') {
+    // update installed plugin
+    update(argument);
+} else if(command === 'updateall') {
+    update();
+    // update all plugins
 } else if(command != null) {
     error('Wrong command:', command);
     help();
