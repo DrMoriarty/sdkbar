@@ -4,6 +4,10 @@ const et = require('elementtree');
 const path = require('path');
 const child_process = require('child_process');
 const package_parser = require('./sdkbar_parser').parser;
+const url = require('url');
+const Q = require('q');
+const unzip = require('unzip');
+const nodegit = require('nodegit');
 
 if (!String.prototype.startswith) {
   Object.defineProperty(String.prototype, 'startswith', {
@@ -135,7 +139,9 @@ try {
 }
 
 function saveConf() {
-    fs.writeFileSync(project_root+'/.sdkbar.json', JSON.stringify(conf, null, 4));
+    var fname = path.join(project_root,'.sdkbar.json');
+    fs.writeFileSync(fname, JSON.stringify(conf, null, 4));
+    debug('Config saved:', fname);
 }
 
 /*******************
@@ -263,6 +269,53 @@ function removeEmptyDirs(dir) {
         }
     }
 }
+
+function removeRecursively(dir) {
+    if( fs.existsSync(dir) ) {
+        if(fs.lstatSync(dir).isDirectory()) {
+            fs.readdirSync(dir).forEach(function(file,index){
+                var curPath = path.join(dir, file);
+                if(fs.lstatSync(curPath).isDirectory()) { // recurse
+                    removeRecursively(curPath);
+                } else { // delete file
+                    fs.unlinkSync(curPath);
+                }
+            });
+            fs.rmdirSync(dir);
+        } else {
+            fs.unlinkSync(dir);
+        }
+    }
+}
+
+/*******************
+ *
+ *  Utilities for remote sources (HTTP Git and so on)
+ *
+ *******************/
+
+
+function download(uri, filename) {
+    var protocol = url.parse(uri).protocol.slice(0, -1);
+    var deferred = Q.defer();
+    var onError = function (e) {
+        fs.unlinkSync(filename);
+        deferred.reject(e);
+    }
+    require(protocol).get(uri, function(response) {
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+            var fileStream = fs.createWriteStream(filename);
+            fileStream.on('error', onError);
+            fileStream.on('close', deferred.resolve);
+            response.pipe(fileStream);
+        } else if (response.headers.location) {
+            deferred.resolve(download(response.headers.location, filename));
+        } else {
+            deferred.reject(new Error(response.statusCode + ' ' + response.statusMessage));
+        }
+    }).on('error', onError);
+    return deferred.promise;
+};
 
 /*******************
  *
@@ -683,23 +736,63 @@ function script_install(plugin_path, plugin, origin, script) {
     conf[plugin.name]['install_log'] = install_log_list;
 }
 
-function install(path) {
-    if(/^http/.test(path)) {
-        // TODO remote install
+function install(installpath, origin) {
+    if(/^http/.test(installpath)) {
+        // remote install
+        var cache = path.join(process.env.HOME, '.sdkbar/cache');
+        mkdirpSync(cache);
+        // clean cache directory
+        fs.readdirSync(cache).forEach(function(file, index){
+            removeRecursively(path.join(cache, file));
+        });
+        if(/\.zip$/.test(installpath)) {
+            // download zip archive
+            debug('Download zip archive:', installpath);
+            var fname = path.join(cache, 'plugin.zip');
+            download(installpath, fname).then(function(result) {
+                debug('File downloaded:', fname);
+                fs.createReadStream(fname).pipe(unzip.Extract({ path: cache })).on('close', function() {
+                    fs.unlinkSync(fname);
+                    var files = fs.readdirSync(cache);
+                    if(files.length >= 1) {
+                        var newpath = path.join(cache, files[0]);
+                        debug('Ready to install downloaded plugin:', newpath);
+                        install(newpath, installpath);
+                    } else {
+                        error('Plugin content not found');
+                        process.exit(1);
+                    }
+                });
+            }, function(err) {
+                error('File downloading error:', err);
+                process.exit(1);
+            });
+        } else {
+            // try to clone git repo
+            debug('Clone git repo:', installpath);
+            nodegit.Clone(installpath, path.join(cache, path.basename(installpath)), {}).then(function (repo) {
+                debug("Cloned " + installpath + " to " + repo.workdir());
+                install(repo.workdir(), installpath);
+            }).catch(function (err) {
+                error(err);
+                process.exit(1);
+            });
+        }
     } else {
         // local install
         var plugin = null;
         var install_script = null;
+        var orgn = origin || installpath;
         try {
-            if(fs.existsSync(path+'/package.json') && fs.existsSync(path+'/sdkbar.package')) {
-                plugin = JSON.parse(fs.readFileSync(path+'/package.json', 'utf8'));
-                install_script = fs.readFileSync(path+'/sdkbar.package', 'utf8');
-                console.log('Installing', plugin.name, 'version', plugin.version, 'from', path);
-                script_install(path, plugin, path, install_script);
+            if(fs.existsSync(installpath+'/package.json') && fs.existsSync(installpath+'/sdkbar.package')) {
+                plugin = JSON.parse(fs.readFileSync(installpath+'/package.json', 'utf8'));
+                install_script = fs.readFileSync(installpath+'/sdkbar.package', 'utf8');
+                console.log('Installing', plugin.name, 'version', plugin.version, 'from', installpath);
+                script_install(installpath, plugin, orgn, install_script);
             } else {
-                install_script = fs.readFileSync(path+'/sdkbox.package', 'utf8');
-                console.log('Installing SDKBOX plugin from', path);
-                script_install(path, {'name': 'generic-sdkbox-plugin'}, path, install_script);
+                install_script = fs.readFileSync(installpath+'/sdkbox.package', 'utf8');
+                console.log('Installing SDKBOX plugin from', installpath);
+                script_install(installpath, {'name': 'generic-sdkbox-plugin'}, orgn, install_script);
             }
         } catch (err) {
             error(err.stack);
@@ -716,6 +809,7 @@ function install(path) {
                 process.exit(1);
             }
         }
+        saveConf();
     }
 }
 
@@ -778,6 +872,7 @@ function remove(name) {
         }
     }
     delete conf[name];
+    saveConf();
 }
 
 if(command === 'help') {
@@ -785,12 +880,15 @@ if(command === 'help') {
 } else if(command === 'list') {
     list();
 } else if(command === 'install') {
-    argument = path.resolve(argument);
+    if(/^http/.test(argument)) {
+        // remote origin
+    } else {
+        // local origin
+        argument = path.resolve(argument);
+    }
     install(argument);
-    saveConf();
 } else if(command === 'remove') {
     remove(argument);
-    saveConf();
 } else if(command != null) {
     error('Wrong command:', command);
     help();
