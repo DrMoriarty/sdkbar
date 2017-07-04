@@ -54,9 +54,9 @@ object_end
     ;
 
 object_declaration
-    : string ':' rvalue
+    : string ':' expression
     { var key = $1.substring(1, $1.length-1); var obj = this.object_stack[this.object_stack.length-1]; obj[key] = $3; $$ = obj; }
-    | string ':' rvalue COMMA object_declaration
+    | string ':' expression COMMA object_declaration
     { var key = $1.substring(1, $1.length-1); var obj = this.object_stack[this.object_stack.length-1]; obj[key] = $3; $$ = obj; }
     ;
 

@@ -100,6 +100,7 @@ var proj = null;
 var conf = null;
 var project_root = path.resolve("./");
 var install_log_list = [];
+var variables = {};
 
 function install_log(operation, arg) {
     install_log_list.push({'op': operation, 'arg': arg});
@@ -109,12 +110,12 @@ function help() {
     console.log(`SDKBAR v 0.0.1
 
 Usage: 
-sdkbar --list                    List all installed plugins
-sdkbar --install <url or path>   Install new plugin
-sdkbar --remove <plugin name>    Uninstall the installed plugin
-sdkbar --update <plugin name>    Update the plugin
-sdkbar --updateall               Update all installed plugins
-sdkbar --help                    This page
+sdkbar --list                                         List all installed plugins
+sdkbar [--variable KEY=VALUE] --install <url or path> Install new plugin
+sdkbar --remove <plugin name>                         Uninstall the installed plugin
+sdkbar --update <plugin name>                         Update the plugin
+sdkbar --updateall                                    Update all installed plugins
+sdkbar --help                                         This page
 `);
 }
 
@@ -146,27 +147,6 @@ function saveConf() {
     fs.writeFileSync(fname, JSON.stringify(conf, null, 4));
     debug('Config saved:', fname);
 }
-
-/*******************
- *
- *  Parsing command line arguments
- *
- *******************/
-
-var args = process.argv.slice(2);
-var command = null;
-var argument = null;
-args.forEach(function (val, index, array) {
-    if(/^--/.test(val)) {
-        command = val.substring(2);
-    } else if(command != null) {
-        argument = val;
-    } else {
-        console.error('Unknown parameter:', val);
-        help();
-        process.exit(1);
-    }
-});
 
 function compareVersions(v1, v2) {
     var vv1 = v1.split('.');
@@ -534,6 +514,7 @@ var functioner = {
             tag = obj['tag'],
             key = obj['key'],
             xml = obj['xml'];
+        debug('Add xml item', file, obj);
         var child = xml_append(file, xpath, tag, 'name=\''+key+'\'', xml);
         if(file.startsWith(project_root)) {
             file = file.substring(project_root.length);
@@ -556,7 +537,8 @@ function script_install(plugin_path, plugin, origin, script) {
     conf[plugin.name] = {
         'name': plugin.name,
         'version': plugin.version,
-        'origin': origin
+        'origin': origin,
+        'variables': variables
     };
 
     var default_scope = {
@@ -636,6 +618,16 @@ function script_install(plugin_path, plugin, origin, script) {
             debug(arg1, '=', arg2);
             default_scope[arg1] = arg2;
             return arg1;
+        },
+        'variable': function(arg1) {
+            arg1 = this.do_command(arg1);
+            var value = this.resolve_name_in_scope(arg1, variables);
+            if(value == null) {
+                error('Variable required:', arg1);
+                error('Use parameter: --variable '+arg1+'=VALUE');
+                process.exit(1);
+            }
+            return value;
         }
     }
 
@@ -749,6 +741,13 @@ function script_install(plugin_path, plugin, origin, script) {
                     error('function', fn, 'is undefined');
                     return null;
                 }
+            } else if(command !== null && typeof command === 'object') {
+                // parse dictionary
+                var processed = {};
+                for(var key in command) {
+                    processed[key] = this.do_command(command[key]);
+                }
+                return processed;
             } else {
                 // variable or value
                 return this.resolve_name(command);
@@ -830,7 +829,7 @@ function install(installpath, origin) {
                         debug('Update', prev.name, 'from version', prev.version, 'to', plugin.version);
                         remove(prev.name);
                     } else {
-                        error('Skip already installed plugin:', plugin.name, plugin.version);
+                        warning('Skip already installed plugin:', plugin.name, plugin.version);
                         return;
                     }
                 }
@@ -930,10 +929,9 @@ function update(name) {
             process.exit(1);
         }
         var origin = cc.origin;
+        variables = cc.variables || {};
         if(/^http/.test(origin)) {
             install(origin);
-            //get_remote_plugin(origin, function(dir) {
-            //});
         } else {
             debug('Skip local installed plugin', pluginname);
         }
@@ -949,31 +947,73 @@ function update(name) {
     }
 }
 
-if(command === 'help') {
-    help();
-} else if(command === 'list') {
-    list();
-} else if(command === 'install') {
-    if(/^http/.test(argument)) {
-        // remote origin
+function setVariable(arg) {
+    var ar = arg.split('=');
+    if(ar.length == 2) {
+        variables[ar[0]] = ar[1];
     } else {
-        // local origin
-        argument = path.resolve(argument);
+        error('Invalid variable:', arg);
+        process.exit(1);
     }
-    install(argument);
-} else if(command === 'remove') {
-    remove(argument);
-} else if(command === 'update') {
-    // update installed plugin
-    update(argument);
-} else if(command === 'updateall') {
-    update();
-    // update all plugins
-} else if(command != null) {
-    error('Wrong command:', command);
-    help();
-    process.exit(1);
-} else {
+}
+
+/*******************
+ *
+ *  Parsing command line arguments
+ *
+ *******************/
+
+var args = process.argv.slice(2);
+var command = null;
+var argument = null;
+var noCommand = true;
+args.forEach(function (val, index, array) {
+    if(/^--/.test(val)) {
+        command = val.substring(2);
+        if(command === 'help') {
+            help();
+            noCommand = false;
+        } else if(command === 'list') {
+            list();
+            noCommand = false;
+        } else if(command === 'updateall') {
+            // update all plugins
+            update();
+            noCommand = false;
+        } 
+    } else if(command != null) {
+        argument = val;
+        if(command === 'install') {
+            if(/^http/.test(argument)) {
+                // remote origin
+            } else {
+                // local origin
+                argument = path.resolve(argument);
+            }
+            install(argument);
+            noCommand = false;
+        } else if(command === 'remove') {
+            remove(argument);
+            noCommand = false;
+        } else if(command === 'update') {
+            // update installed plugin
+            update(argument);
+            noCommand = false;
+        } else if(command === 'variable') {
+            setVariable(argument);
+        } else if(command != null) {
+            error('Wrong command:', command);
+            help();
+            process.exit(1);
+        }
+    } else {
+        console.error('Unknown parameter:', val);
+        help();
+        process.exit(1);
+    }
+});
+
+if(noCommand) {
     error('No command!');
     help();
     process.exit(1);
