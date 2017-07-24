@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+const version = '0.0.2';
+
 const fs = require('fs');
 const et = require('elementtree');
 const path = require('path');
@@ -9,6 +11,9 @@ const Q = require('q');
 const unzip = require('unzip');
 const nodegit = require('nodegit');
 const sync = require('sync');
+const tmp = require('tmp');
+const glob = require('glob');
+const xcode = require('xcode');
 
 if (!String.prototype.startswith) {
   Object.defineProperty(String.prototype, 'startswith', {
@@ -54,7 +59,10 @@ const BgMagenta = "\x1b[45m";
 const BgCyan = "\x1b[46m";
 const BgWhite = "\x1b[47m";
 
+var logLevel = 1;
+
 function debug(str) {
+    if(logLevel > 0) return;
     var args = [Dim];
     for(key in arguments) {
         args.push(arguments[key]);
@@ -64,6 +72,7 @@ function debug(str) {
 }
 
 function log(str) {
+    if(logLevel > 1) return;
     var args = [Bright];
     for(key in arguments) {
         args.push(arguments[key]);
@@ -73,6 +82,7 @@ function log(str) {
 }
 
 function warning(str) {
+    if(logLevel > 2) return;
     var args = [FgYellow, 'Warning:'];
     for(key in arguments) {
         args.push(arguments[key]);
@@ -82,6 +92,7 @@ function warning(str) {
 }
 
 function error() {
+    if(logLevel > 3) return;
     var args = [FgRed, 'Error:'];
     for(key in arguments) {
         args.push(arguments[key]);
@@ -101,21 +112,28 @@ var conf = null;
 var project_root = path.resolve("./");
 var install_log_list = [];
 var variables = {};
+var xcode_project_file = null;
 
 function install_log(operation, arg) {
     install_log_list.push({'op': operation, 'arg': arg});
 }
 
 function help() {
-    console.log(`SDKBAR v 0.0.1
+    console.log(`SDKBAR v ${version}
 
-Usage: 
-sdkbar --list                                         List all installed plugins
-sdkbar [--variable KEY=VALUE] --install <url or path> Install new plugin
-sdkbar --remove <plugin name>                         Uninstall the installed plugin
-sdkbar --update <plugin name>                         Update the plugin
-sdkbar --updateall                                    Update all installed plugins
-sdkbar --help                                         This page
+usage: sdkbar [options] <command>
+
+options:
+ --verbose                    Show debug output
+ -v|--variable KEY=VALUE      Set plugin variable
+
+command:
+ -l|--list                    List all installed plugins
+ -i|--install <url or path>   Install new plugin
+ -r|--remove <plugin name>    Uninstall the installed plugin
+ -u|--update <plugin name>    Update the plugin
+ --updateall                  Update all installed plugins
+ -h|--help                    This page
 `);
 }
 
@@ -278,6 +296,7 @@ function removeEmptyDirs(dir) {
 }
 
 function removeRecursively(dir) {
+    debug('Clear dir', dir);
     if( fs.existsSync(dir) ) {
         if(fs.lstatSync(dir).isDirectory()) {
             fs.readdirSync(dir).forEach(function(file,index){
@@ -375,6 +394,73 @@ function xml_remove(fname, parent, xpath) {
 
 /*******************
  *
+ *  Xcode functions
+ *
+ *******************/
+
+function xcode_add(sources, frameworks, xcodeproj) {
+    myProj = xcode.project(xcodeproj);
+    myProj.parseSync();
+    debug('Open xcode project', xcodeproj);
+    //var pluginsGroup = myProj.pbxGroupByName('Classes');
+    var pluginsGroup = myProj.findPBXGroupKey({ name: 'Classes' });
+    var targetId = null;
+    var targetSection = myProj.pbxNativeTargetSection();
+    for(key in targetSection) {
+        var secName = targetSection[key].name;
+        //debug('Section', key, secName, typeof secName !== 'undefined' ? secName.endsWith('mobile"') : '');
+        if(typeof secName !== 'undefined' && secName && secName.endsWith('mobile"')) {
+            targetId = key;
+            debug('Select target', targetId, secName);
+            break;
+        }
+    }
+    //myProj.addHeaderFile('foo.h');
+    for(var key in sources) {
+        var src = sources[key];
+        debug('Add xcode source file', src);
+        myProj.addSourceFile(src, {target: targetId}, pluginsGroup);
+    }
+    var projdir = project_root+'/frameworks/runtime-src/proj.ios_mac/';
+    for(var key in frameworks) {
+        var frmw = frameworks[key];
+        var opt = {target: targetId};
+        if(fs.existsSync(path.join(projdir, frmw))) {
+            //frmw = path.join(projdir, frmw);
+            opt.customFramework = true;
+        }
+        debug('Add xcode framework file', frmw);
+        myProj.addFramework(frmw, opt);
+    }
+    fs.writeFileSync(xcodeproj, myProj.writeSync());
+    if(xcodeproj.startsWith(project_root)) {
+        xcodeproj = xcodeproj.substring(project_root.length);
+        var separator = "" + path.sep;
+        if(xcodeproj.startsWith(separator)) {
+            xcodeproj = xcodeproj.substring(separator.length);
+        }
+    }
+
+    install_log('xcode', {'proj': xcodeproj, 'sources': sources, 'frameworks': frameworks});
+}
+
+function xcode_remove(sources, frameworks, xcodeproj) {
+    myProj = xcode.project(xcodeproj);
+    myProj.parseSync();
+    var pluginsGroup = myProj.findPBXGroupKey({ name: 'Classes' });
+    for(var key in sources) {
+        var src = sources[key];
+        myProj.removeSourceFile(src, {}, pluginsGroup);
+    }
+    for(var key in frameworks) {
+        var frmw = frameworks[key];
+        myProj.removeFramework(frmw);
+    }
+    fs.writeFileSync(xcodeproj, myProj.writeSync());
+}
+
+/*******************
+ *
  *  Sdkbar functions
  *
  *******************/
@@ -411,10 +497,12 @@ var functioner = {
         warning('Warning: apply_patch is unimplemented yet!');
     },
     xcode_add_frameworks: function(frameworks) {
-        warning('Warning: xcode_add_frameworks is unimplemented yet!');
+        //warning('Warning: xcode_add_frameworks is unimplemented yet!');
+        xcode_add({}, frameworks, xcode_project_file);
     },
-    xcode_add_sources: function() {
-        warning('Warning: xcode_add_sources is unimplemented yet!');
+    xcode_add_sources: function(sources) {
+        //warning('Warning: xcode_add_sources is unimplemented yet!');
+        xcode_add(sources, {}, xcode_project_file);
     },
     android_copy_jars: function() {
         warning('Warning: android_copy_jars is unimplemented yet!');
@@ -540,6 +628,10 @@ function script_install(plugin_path, plugin, origin, script) {
         'origin': origin,
         'variables': variables
     };
+    
+    var prjs = glob.sync(path.join(project_root,'frameworks/runtime-src/proj.ios_mac/*.xcodeproj'), {});
+    if(typeof prjs !== 'undefined' && prjs.length > 0)
+        xcode_project_file = path.join(prjs[0], 'project.pbxproj');
 
     var default_scope = {
         'print': console.log,
@@ -559,6 +651,8 @@ function script_install(plugin_path, plugin, origin, script) {
         'ANDROID_STUDIO_PROJECT_DIR': project_root+'/frameworks/runtime-src/proj.android-studio/',
         'ANDROID_PROJECT_DIR': project_root+'/frameworks/runtime-src/proj.android/',
         'IOS_PROJECT_DIR': project_root+'/frameworks/runtime-src/proj.ios_mac/',
+        'XCODE_PROJECT_DIR': prjs[0],
+        'XCODE_PROJECT': xcode_project_file,
         'sdkbar': functioner,
         'sdkbox': functioner
     }
@@ -767,13 +861,17 @@ function get_remote_plugin(uri, callback) {
     var cache = path.join(process.env.HOME, '.sdkbar/cache');
     mkdirpSync(cache);
     // clean cache directory
-    fs.readdirSync(cache).forEach(function(file, index){
-        removeRecursively(path.join(cache, file));
-    });
+    //fs.readdirSync(cache).forEach(function(file, index) {
+    //    removeRecursively(path.join(cache, file));
+    //});
+    debug('Cache clean. Processing download...');
     if(/\.zip$/.test(uri)) {
         // download zip archive
+        var tmpobj = tmp.dirSync({template: cache+'/archive-XXXXXXXXXX'});
+        cache = tmpobj.name;
+        mkdirpSync(cache);
         debug('Download zip archive:', uri);
-        var fname = path.join(cache, 'plugin.zip');
+        var fname = path.join(cache, path.basename(uri));
         download(uri, fname).then(function(result) {
             debug('File downloaded:', fname);
             fs.createReadStream(fname).pipe(unzip.Extract({ path: cache })).on('close', function() {
@@ -792,7 +890,9 @@ function get_remote_plugin(uri, callback) {
     } else {
         // try to clone git repo
         debug('Clone git repo:', uri);
-        nodegit.Clone(uri, path.join(cache, path.basename(uri)), {}).then(function (repo) {
+        var dest = path.join(cache, path.basename(uri));
+        removeRecursively(dest);
+        nodegit.Clone(uri, dest, {}).then(function (repo) {
             callback(null, repo.workdir());
         }).catch(function (err) {
             callback(err, null);
@@ -805,6 +905,7 @@ function install(installpath, origin) {
         // remote install
         sync(function() {
             try {
+                debug('Remote install', installpath);
                 var dir = get_remote_plugin.sync(null, installpath);
                 debug('Ready to install downloaded plugin:', dir);
                 install(dir, installpath);
@@ -826,7 +927,7 @@ function install(installpath, origin) {
                 if(typeof prev != 'undefined' && prev != null) {
                     if(compareVersions(prev.version, plugin.version) > 0) {
                         // try to update
-                        debug('Update', prev.name, 'from version', prev.version, 'to', plugin.version);
+                        log('Update', prev.name, 'from version', prev.version, 'to', plugin.version);
                         remove(prev.name);
                     } else {
                         warning('Skip already installed plugin:', plugin.name, plugin.version);
@@ -912,6 +1013,12 @@ function remove(name) {
                     error('unknown inject argument', arg);
                 }
                 fs.writeFileSync(fname, data);
+            } else if(op['op'] === 'xcode') {
+                var arg = op['arg'];
+                var proj = arg['proj'];
+                var sources = arg['sources'] || {};
+                var frameworks = arg['frameworks'] || {};
+                xcode_remove(sources, frameworks, proj);
             } else {
                 error('Unknown install operation:', op['op'], 'with arg:', op['arg']);
             }
@@ -966,40 +1073,43 @@ function setVariable(arg) {
 var args = process.argv.slice(2);
 var command = null;
 var argument = null;
-var noCommand = true;
+var tasks = [];
 args.forEach(function (val, index, array) {
     if(/^--/.test(val)) {
         command = val.substring(2);
         if(command === 'help') {
-            help();
-            noCommand = false;
+            tasks.push(help);
         } else if(command === 'list') {
-            list();
-            noCommand = false;
+            tasks.push(list);
         } else if(command === 'updateall') {
             // update all plugins
-            update();
-            noCommand = false;
-        } 
+            tasks.push(update);
+        } else if(command === 'verbose') {
+            logLevel = 0;
+        }
+    } else if(/^-\w$/.test(val)) {
+        command = val.substring(1);
+        if(command === 'h') {
+            tasks.push(help);
+        } else if(command === 'l') {
+            tasks.push(list);
+        }
     } else if(command != null) {
         argument = val;
-        if(command === 'install') {
+        if(command === 'install' || command === 'i') {
             if(/^http/.test(argument)) {
                 // remote origin
             } else {
                 // local origin
                 argument = path.resolve(argument);
             }
-            install(argument);
-            noCommand = false;
-        } else if(command === 'remove') {
-            remove(argument);
-            noCommand = false;
-        } else if(command === 'update') {
+            tasks.push(install.bind(null, argument));
+        } else if(command === 'remove' || command === 'r') {
+            tasks.push(remove.bind(null, argument));
+        } else if(command === 'update' || command === 'u') {
             // update installed plugin
-            update(argument);
-            noCommand = false;
-        } else if(command === 'variable') {
+            tasks.push(update.bind(null, argument));
+        } else if(command === 'variable' || command === 'v') {
             setVariable(argument);
         } else if(command != null) {
             error('Wrong command:', command);
@@ -1013,7 +1123,12 @@ args.forEach(function (val, index, array) {
     }
 });
 
-if(noCommand) {
+if(tasks.length > 0) {
+    for(key in tasks) {
+        var task = tasks[key];
+        task();
+    }
+} else {
     error('No command!');
     help();
     process.exit(1);
