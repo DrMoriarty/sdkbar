@@ -14,6 +14,7 @@ const sync = require('sync');
 const tmp = require('tmp');
 const glob = require('glob');
 const xcode = require('xcode');
+const targz = require('targz');
 
 if (!String.prototype.startswith) {
   Object.defineProperty(String.prototype, 'startswith', {
@@ -113,6 +114,7 @@ var project_root = path.resolve("./");
 var install_log_list = [];
 var variables = {};
 var xcode_project_file = null;
+var clean_temp = true;
 
 function install_log(operation, arg) {
     install_log_list.push({'op': operation, 'arg': arg});
@@ -126,6 +128,7 @@ usage: sdkbar [options] <command>
 options:
  --verbose                    Show debug output
  -v|--variable KEY=VALUE      Set plugin variable
+ --no-clean                   Don't clean the temp directory
 
 command:
  -l|--list                    List all installed plugins
@@ -225,10 +228,8 @@ var mkdirpSync = function (dirpath) {
 function copyFileSync( source, target ) {
     var targetFile = target;
     //if target is a directory a new file with the same name will be created
-    if ( fs.existsSync( target ) ) {
-        if ( fs.lstatSync( target ).isDirectory() ) {
-            targetFile = path.join( target, path.basename( source ) );
-        }
+    if ( fs.existsSync( target ) && fs.lstatSync( target ).isDirectory() ) {
+        targetFile = path.join( target, path.basename( source ) );
     }
     debug('Copy file', source, target);
     if(fs.existsSync(targetFile))
@@ -242,6 +243,27 @@ function copyFileSync( source, target ) {
         }
     }
     return targetFile;
+}
+
+function copySymLinkSync(source, target) {
+    var link = fs.readlinkSync(source);
+    if ( fs.existsSync( target ) && fs.lstatSync( target ).isDirectory() ) {
+        target = path.join( target, path.basename( source ) );
+    }
+    if(fs.existsSync(target)) {
+        warning('File exist', target);
+        fs.unlinkSync(target);
+    }
+    debug('Copy symlink', source, target);
+    fs.symlinkSync(link, target);
+    if(target.startsWith(project_root)) {
+        target = target.substring(project_root.length);
+        var separator = "" + path.sep;
+        if(target.startsWith(separator)) {
+            target = target.substring(separator.length);
+        }
+    }
+    return target;
 }
 
 function copyPathSync(source, target) {
@@ -258,7 +280,9 @@ function copyPathSync(source, target) {
             var stats = fs.lstatSync(ss);
             if (stats.isDirectory()) {
                 result = result.concat(copyPathSync(ss, target));
-            } else {
+            } else if(stats.isSymbolicLink()) {
+                result.push(copySymLinkSync(ss, target));
+            } else if(stats.isFile()) {
                 result.push(copyFileSync(ss, target));
             }
         }
@@ -497,11 +521,9 @@ var functioner = {
         warning('Warning: apply_patch is unimplemented yet!');
     },
     xcode_add_frameworks: function(frameworks) {
-        //warning('Warning: xcode_add_frameworks is unimplemented yet!');
         xcode_add({}, frameworks, xcode_project_file);
     },
     xcode_add_sources: function(sources) {
-        //warning('Warning: xcode_add_sources is unimplemented yet!');
         xcode_add(sources, {}, xcode_project_file);
     },
     android_copy_jars: function() {
@@ -531,18 +553,30 @@ var functioner = {
         var child = xml_append(file, xpath, tag, 'android:name=\''+key+'\'', xml);
         install_log('xml', {'file': 'frameworks/runtime-src/proj.android-studio/app/AndroidManifest.xml', 'parent': xpath, 'xpath': child});
     },
+    android_set_app_platform: function(num) {
+        warning('Warning: android_set_app_platform unimplemented yet!');
+    },
+    android_add_key_value: function(scope, key, value) {
+        warning('Warning: android_add_key_value unimplemented yet!');
+    },
     satisfies_cocos_version: function() {
-        warning('Warning: satisfies_cocos_version unimplemented yet!');
+        //warning('Warning: satisfies_cocos_version unimplemented yet!');
+        for(var key in arguments) {
+            var arg = arguments[key];
+            if(arg.startsWith('3.'))
+                return true;
+        }
         return false;
     },
     define: function(key, value) {
         warning('Warning: define unimplemented yet!');
+        
     },
-    open_documentation: function() {
-        warning('Warning: open_documentation unimplemented yet!');
+    open_documentation: function(url, param) {
+        log('Plugin documentation:', url);
     },
-    puts: function() {
-        warning('Warning: puts unimplemented yet!');
+    puts: function(data) {
+        log.apply(this, arguments);
     },
     
     /************** SdkBar methods **************/
@@ -638,7 +672,7 @@ function script_install(plugin_path, plugin, origin, script) {
         'True': true,
         'False': false,
         'COCOS_PROJECT_TYPE': 'js',
-        'COCOS_2DX_VERSION': '3',
+        'COCOS_2DX_VERSION': '3.10',
         'SDKBOX_PACKAGE_NAME': plugin.name,
         'PLUGIN_PATH': plugin_path,
         'COCOS_RESOURCES_DIR': project_root+'/res/',
@@ -712,6 +746,18 @@ function script_install(plugin_path, plugin, origin, script) {
             debug(arg1, '=', arg2);
             default_scope[arg1] = arg2;
             return arg1;
+        },
+        'INDEX': function(ar, ind) {
+            if(ar instanceof Array) {
+                return ar[ind];
+            } else if(typeof ar === 'string') {
+                var ar2 = ar.split('.');
+                if(ar2.length > ind) {
+                    return ar2[ind];
+                }
+            }
+            error('Invalid index', ind, 'for', ar);
+            process.exit(1);
         },
         'variable': function(arg1) {
             arg1 = this.do_command(arg1);
@@ -865,17 +911,18 @@ function get_remote_plugin(uri, callback) {
     //    removeRecursively(path.join(cache, file));
     //});
     debug('Cache clean. Processing download...');
-    if(/\.zip$/.test(uri)) {
-        // download zip archive
-        var tmpobj = tmp.dirSync({template: cache+'/archive-XXXXXXXXXX'});
+    if(/\.zip$/.test(uri) || /\.tar.gz$/.test(uri)) {
+        // download archive
+        var tmpobj = tmp.dirSync({template: cache+'/archive-XXXXXX'});
         cache = tmpobj.name;
         mkdirpSync(cache);
-        debug('Download zip archive:', uri);
+        debug('Download archive:', uri);
         var fname = path.join(cache, path.basename(uri));
         download(uri, fname).then(function(result) {
             debug('File downloaded:', fname);
-            fs.createReadStream(fname).pipe(unzip.Extract({ path: cache })).on('close', function() {
-                fs.unlinkSync(fname);
+            var proc = function() {
+                if(clean_temp)
+                    fs.unlinkSync(fname);
                 var files = fs.readdirSync(cache);
                 if(files.length >= 1) {
                     var newpath = path.join(cache, files[0]);
@@ -883,7 +930,26 @@ function get_remote_plugin(uri, callback) {
                 } else {
                     callback('Plugin content not found', null);
                 }
-            });
+            };
+            var err = function(e) {
+                error(e);
+            };
+            if(/\.zip$/.test(fname)) {
+                // process zip file
+                fs.createReadStream(fname).pipe(unzip.Extract({ path: cache })).on('error', err).on('close', proc);
+            } else if(/\.tar.gz$/.test(fname)) {
+                // process tar.gz file
+                targz.decompress({
+                    src: fname,
+                    dest: cache
+                }, function(e){
+                    if(e) err(e);
+                    else proc();
+                });
+            } else {
+                error('Archive format not supported:', fname);
+                process.exit(1);
+            }
         }, function(err) {
             callback(err, null);
         });
@@ -909,6 +975,10 @@ function install(installpath, origin) {
                 var dir = get_remote_plugin.sync(null, installpath);
                 debug('Ready to install downloaded plugin:', dir);
                 install(dir, installpath);
+                if(clean_temp) {
+                    debug('Remove plugin temp directory', dir);
+                    removeRecursively(dir);
+                }
             } catch(err) {
                 error(err);
                 process.exit(1);
@@ -920,7 +990,8 @@ function install(installpath, origin) {
         var install_script = null;
         var orgn = origin || installpath;
         try {
-            if(fs.existsSync(installpath+'/package.json') && fs.existsSync(installpath+'/sdkbar.package')) {
+            if(fs.existsSync(path.join(installpath,'package.json')) && fs.existsSync(path.join(installpath,'sdkbar.package'))) {
+                // install SDKBAR plugin
                 plugin = JSON.parse(fs.readFileSync(installpath+'/package.json', 'utf8'));
                 install_script = fs.readFileSync(installpath+'/sdkbar.package', 'utf8');
                 var prev = conf[plugin.name];
@@ -937,12 +1008,37 @@ function install(installpath, origin) {
                 console.log('Installing', plugin.name, 'version', plugin.version, 'from', installpath);
                 script_install(installpath, plugin, orgn, install_script);
             } else {
-                install_script = fs.readFileSync(installpath+'/sdkbox.package', 'utf8');
+                // install SDKBOX plugin
                 console.log('Installing SDKBOX plugin from', installpath);
-                script_install(installpath, {'name': 'generic-sdkbox-plugin'}, orgn, install_script);
+                var plugin_name = 'generic-sdkbox-plugin', plugin_version = 'unknown';
+                var re = /([a-z-]+)_v([0-9\.]+)$/;
+                var base = path.basename(installpath)
+                if(re.test(base)) {
+                    var result = base.match(re);
+                    if(result != null) {
+                        plugin_name = result[1];
+                        plugin_version = result[2];
+                        debug('Plugin:', plugin_name, 'version:', plugin_version);
+                    }
+                }
+                if(fs.existsSync(path.join(installpath,'sdkbox.package'))) {
+                    install_script = fs.readFileSync(path.join(installpath,'sdkbox.package'), 'utf8');
+                } else if(fs.existsSync(path.join(installpath, 'plugin', 'sdkbox.package'))) {
+                    installpath = path.join(installpath, 'plugin');
+                    install_script = fs.readFileSync(path.join(installpath, 'sdkbox.package'), 'utf8');
+                }
+                if(install_script != null)
+                    script_install(installpath, {'name': plugin_name, 'version': plugin_version}, orgn, install_script);
+                else {
+                    error('Plugin format not supported');
+                    process.exit(1);
+                }
             }
         } catch (err) {
-            error(err.stack);
+            if(err.stack)
+                error(err.stack);
+            else
+                error(err);
             if(err["code"] === "ENOENT") {
                 // no such file
                 error(err);
@@ -980,6 +1076,8 @@ function remove(name) {
                         arg = path.join(project_root, arg);
                     if(fs.existsSync(arg)) {
                         fs.unlinkSync(arg);
+                    } else if(fs.lstatSync(arg).isSymbolicLink()) {
+                        fs.unlinkSync(arg);
                     } else {
                         warning('Warning: file not found', arg);
                     }
@@ -1015,7 +1113,7 @@ function remove(name) {
                 fs.writeFileSync(fname, data);
             } else if(op['op'] === 'xcode') {
                 var arg = op['arg'];
-                var proj = arg['proj'];
+                var proj = path.join(project_root, arg['proj']);
                 var sources = arg['sources'] || {};
                 var frameworks = arg['frameworks'] || {};
                 xcode_remove(sources, frameworks, proj);
@@ -1086,6 +1184,8 @@ args.forEach(function (val, index, array) {
             tasks.push(update);
         } else if(command === 'verbose') {
             logLevel = 0;
+        } else if(command === 'no-clean') {
+            clean_temp = false;
         }
     } else if(/^-\w$/.test(val)) {
         command = val.substring(1);
