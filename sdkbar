@@ -774,7 +774,7 @@ function script_install(plugin_path, plugin, origin, script) {
     var str_re1 = /^\'([^\']*)\'$/;
     var str_re2 = /^\"([^\"]*)\"$/;
     var str_re3 = /^\'\'\'([^\']+)\'\'\'$/;
-    var int_re = /[0-9]+/;
+    var int_re = /^[0-9]+$/;
     var sub_token = /^([^\.]+)\./;
     var yy = {
         result: [],
@@ -878,7 +878,7 @@ function script_install(plugin_path, plugin, origin, script) {
                     var result = fn.apply(this, args);
                     return result;
                 } else {
-                    error('function', fn, 'is undefined');
+                    error('function', fn, 'is undefined.', cmd, args);
                     return null;
                 }
             } else if(command !== null && typeof command === 'object') {
