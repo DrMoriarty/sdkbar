@@ -15,6 +15,7 @@ const tmp = require('tmp');
 const glob = require('glob');
 const xcode = require('xcode');
 const targz = require('targz');
+const deepmerge = require('deepmerge');
 
 if (!String.prototype.startswith) {
   Object.defineProperty(String.prototype, 'startswith', {
@@ -497,157 +498,195 @@ function list() {
     console.log('');
 }
 
-var functioner = {
-    /************** SDKBOX methods **************/
-    config_merge: function(arg1, arg2) {
-        warning('Warning: config_merge is unimplemented yet!');
-    },
-    copy_files: function(files, from, to) {
-        debug('Copy files', files, from, to);
-        for(key in files) {
-            var src = path.join(from,files[key]);
-            var dst = path.join(to,path.basename(files[key]));
-            var dst_dir = path.dirname(dst);
-            try {
-                var copied = copyPathSync(src, to);
-                install_log('copy', copied);
-            } catch (err) {
-                error('Failed copy', src, 'to', dst);
-                error(err);
+function Functioner(plugin_path) {
+    var fn = {
+        /************** SDKBOX methods **************/
+        config_merge: function(orig, dest) {
+            //warning('Warning: config_merge is unimplemented yet!');
+            if(fs.existsSync(dest)) {
+                var origJson = JSON.parse(fs.readFileSync(orig));
+                var destJson = JSON.parse(fs.readFileSync(dest));
+                destJson = deepmerge(destJson, origJson);
+                fs.writeFileSync(dest, JSON.stringify(destJson, null, 4));
+            } else {
+                copyPathSync(orig, dest);
             }
-        }
-    },
-    apply_patch: function(arg1, arg2, arg3) {
-        warning('Warning: apply_patch is unimplemented yet!');
-    },
-    xcode_add_frameworks: function(frameworks) {
-        xcode_add({}, frameworks, xcode_project_file);
-    },
-    xcode_add_sources: function(sources) {
-        xcode_add(sources, {}, xcode_project_file);
-    },
-    android_copy_jars: function() {
-        warning('Warning: android_copy_jars is unimplemented yet!');
-    },
-    android_copy_libs: function() {
-        warning('Warning: android_copy_libs is unimplemented yet!');
-    },
-    android_add_sources: function() {
-        warning('Warning: android_add_sources unimplemented yet!');
-    },
-    android_set_permissions: function() {
-        warning('Warning: android_set_permissions unimplemented yet!');
-    },
-    android_add_static_libraries: function() {
-        warning('Warning: android_add_static_libraries unimplemented yet!');
-    },
-    android_add_calls: function() {
-        warning('Warning: android_add_calls unimplemented yet!');
-    },
-    android_add_xml_item: function(obj) {
-        var xpath = obj['path'],
-            tag = obj['tag'],
-            key = obj['key'],
-            xml = obj['xml'];
-        var file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/AndroidManifest.xml');
-        var child = xml_append(file, xpath, tag, 'android:name=\''+key+'\'', xml);
-        install_log('xml', {'file': 'frameworks/runtime-src/proj.android-studio/app/AndroidManifest.xml', 'parent': xpath, 'xpath': child});
-    },
-    android_set_app_platform: function(num) {
-        warning('Warning: android_set_app_platform unimplemented yet!');
-    },
-    android_add_key_value: function(scope, key, value) {
-        warning('Warning: android_add_key_value unimplemented yet!');
-    },
-    satisfies_cocos_version: function() {
-        //warning('Warning: satisfies_cocos_version unimplemented yet!');
-        for(var key in arguments) {
-            var arg = arguments[key];
-            if(arg.startsWith('3.'))
-                return true;
-        }
-        return false;
-    },
-    define: function(key, value) {
-        warning('Warning: define unimplemented yet!');
-        
-    },
-    open_documentation: function(url, param) {
-        log('Plugin documentation:', url);
-    },
-    puts: function(data) {
-        log.apply(this, arguments);
-    },
-    
-    /************** SdkBar methods **************/
-    appDelegateInject: function(params) {
-        var fname = path.join(project_root, 'frameworks/runtime-src/Classes/AppDelegate.cpp');
-        var data = fs.readFileSync(fname).toString();
-        var marker = params['marker'];
-        var startMarker = '\n//BEGIN_'+marker+'\n';
-        var endMarker = '//END_'+marker+'\n';
-        if('ios' in params) {
-            var include = params['ios']['include'];
-            var func = params['ios']['function'];
-            include = '#if (CC_TARGET_PLATFORM == CC_PLATFORM_IOS)\n#include "'+include+'"\n#endif\n';
-            func = '#if (CC_TARGET_PLATFORM == CC_PLATFORM_IOS)\n    sc->addRegisterCallback('+func+');\n#endif\n';
-            data = data.replace('\nUSING_NS_CC;', startMarker+include+endMarker+'\nUSING_NS_CC;');
-            data = data.replace('\n    sc->start();', startMarker+func+endMarker+'\n    sc->start();');
-        }
-        if('android' in params) {
-            var include = params['android']['include'];
-            var func = params['android']['function'];
-            include = '#if (CC_TARGET_PLATFORM == CC_PLATFORM_ANDROID)\n#include "'+include+'"\n#endif\n';
-            func = '#if (CC_TARGET_PLATFORM == CC_PLATFORM_ANDROID)\n    sc->addRegisterCallback('+func+');\n#endif\n';
-            data = data.replace('\nUSING_NS_CC;', startMarker+include+endMarker+'\nUSING_NS_CC;');
-            data = data.replace('\n    sc->start();', startMarker+func+endMarker+'\n    sc->start();');
-        }
-        fs.writeFileSync(fname, data);
-        install_log('inject', {'file': 'frameworks/runtime-src/Classes/AppDelegate.cpp', 're': '\n\\/\\/BEGIN_'+marker+'[\\s\\S]*?\\/\\/END_'+marker+'\n'});
-    },
-    gradleProject: function(projname, projpath) {
-        var settings_file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/settings.gradle');
-        var injection = `\ninclude ':${projname}'\nproject(':${projname}').projectDir = new File(settingsDir, '${projpath}')\n`;
-        var data = fs.readFileSync(settings_file).toString();
-        data += injection;
-        fs.writeFileSync(settings_file, data);
-        install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/settings.gradle', 'str': injection});
-        
-        var build_file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/build.gradle');
-        data = fs.readFileSync(build_file).toString();
-        var injection2 = `    compile project(':${projname}')\n`;
-        data = data.replace('dependencies {\n', 'dependencies {\n'+injection2);
-        fs.writeFileSync(build_file, data);
-        install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/app/build.gradle', 'str': injection2});
-    },
-    androidJni: function(files) {
-        var injection = '';
-        for(key in files) {
-            injection = injection + files[key] + ' \\\n';
-        }
-        var fname = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk');
-        var data = fs.readFileSync(fname).toString();
-        data = data.replace('../../../Classes/AppDelegate.cpp \\\n', '../../../Classes/AppDelegate.cpp \\\n'+injection);
-        fs.writeFileSync(fname, data);
-        install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk', 'str': injection});
-    },
-    add_xml_item: function(file, obj) {
-        var xpath = obj['path'],
-            tag = obj['tag'],
-            key = obj['key'],
-            xml = obj['xml'];
-        debug('Add xml item', file, obj);
-        var child = xml_append(file, xpath, tag, 'name=\''+key+'\'', xml);
-        if(file.startsWith(project_root)) {
-            file = file.substring(project_root.length);
-            var separator = "" + path.sep;
-            if(file.startsWith(separator)) {
-                file = file.substring(separator.length);
+        },
+        copy_files: function(files, from, to) {
+            debug('Copy files', files, from, to);
+            for(key in files) {
+                var src = path.join(from,files[key]);
+                var dst = path.join(to,path.basename(files[key]));
+                var dst_dir = path.dirname(dst);
+                try {
+                    var copied = copyPathSync(src, to);
+                    install_log('copy', copied);
+                } catch (err) {
+                    error('Failed copy', src, 'to', dst);
+                    error(err);
+                }
             }
-        }
-        install_log('xml', {'file': file, 'parent': xpath, 'xpath': child});
-    },
-};
+        },
+        apply_patch: function(arg1, arg2, arg3) {
+            warning('Warning: apply_patch is unimplemented yet!');
+        },
+        xcode_add_frameworks: function(frameworks) {
+            xcode_add({}, frameworks, xcode_project_file);
+        },
+        xcode_add_sources: function(sources) {
+            xcode_add(sources, {}, xcode_project_file);
+        },
+        android_copy_jars: function(jars) {
+            var orig = path.join(plugin_path, 'android', 'libs');
+            var dest = path.join(project_root, 'frameworks/cocos2d-x/cocos/platform/android/java/libs');
+            fn.copy_files(jars, orig, dest);
+            dest = path.join(project_root, 'frameworks/cocos2d-x/cocos/platform/android/libcocos2dx/libs');
+            fn.copy_files(jars, orig, dest);
+        },
+        android_copy_libs: function(libs) {
+            var orig = path.join(plugin_path, 'android', 'jni');
+            var dest = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/jni');
+            fn.copy_files(libs, orig, dest);
+        },
+        android_add_sources: function(files) {
+            var injection = '';
+            for(key in files) {
+                injection = injection + '../' + files[key] + ' \\\n';
+            }
+            var fname = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk');
+            var data = fs.readFileSync(fname).toString();
+            data = data.replace('../../../Classes/AppDelegate.cpp \\\n', '../../../Classes/AppDelegate.cpp \\\n'+injection);
+            fs.writeFileSync(fname, data);
+            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk', 'str': injection});
+        },
+        android_set_permissions: function(permissions, verbatim) {
+            for(perm of permissions) {
+                if(perm.indexOf('.') < 0) perm = 'android.permission.'+perm;
+                fn.android_add_xml_item({path: '.', tag: 'uses-permission', key:perm, xml:'<uses-permission android:name="'+perm+'"/>'});
+            }
+        },
+        android_add_static_libraries: function() {
+            warning('Warning: android_add_static_libraries unimplemented yet!');
+        },
+        android_add_calls: function(calls) {
+            var injection = '\n';
+            for(call of calls) {
+                injection = injection + '$(call '+call+')\n';
+            }
+            var fname = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk');
+            var data = fs.readFileSync(fname).toString();
+            data = data+injection;
+            fs.writeFileSync(fname, data);
+            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk', 'str': injection});
+        },
+        android_add_xml_item: function(obj) {
+            var xpath = obj['path'],
+                tag = obj['tag'],
+                key = obj['key'],
+                xml = obj['xml'];
+            var file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/AndroidManifest.xml');
+            var child = xml_append(file, xpath, tag, 'android:name=\''+key+'\'', xml);
+            install_log('xml', {'file': 'frameworks/runtime-src/proj.android-studio/app/AndroidManifest.xml', 'parent': xpath, 'xpath': child});
+        },
+        android_set_app_platform: function(num) {
+            warning('Warning: android_set_app_platform unimplemented yet!');
+        },
+        android_add_key_value: function(scope, key, value) {
+            warning('Warning: android_add_key_value unimplemented yet!');
+        },
+        satisfies_cocos_version: function() {
+            //warning('Warning: satisfies_cocos_version unimplemented yet!');
+            for(var key in arguments) {
+                var arg = arguments[key];
+                if(arg.startsWith('3.'))
+                    return true;
+            }
+            return false;
+        },
+        define: function(key, value) {
+            warning('Warning: define unimplemented yet!');
+            
+        },
+        open_documentation: function(url, param) {
+            log('Plugin documentation:', url);
+        },
+        puts: function(data) {
+            log.apply(this, arguments);
+        },
+        
+        /************** SdkBar methods **************/
+        appDelegateInject: function(params) {
+            var fname = path.join(project_root, 'frameworks/runtime-src/Classes/AppDelegate.cpp');
+            var data = fs.readFileSync(fname).toString();
+            var marker = params['marker'];
+            var startMarker = '\n//BEGIN_'+marker+'\n';
+            var endMarker = '//END_'+marker+'\n';
+            if('ios' in params) {
+                var include = params['ios']['include'];
+                var func = params['ios']['function'];
+                include = '#if (CC_TARGET_PLATFORM == CC_PLATFORM_IOS)\n#include "'+include+'"\n#endif\n';
+                func = '#if (CC_TARGET_PLATFORM == CC_PLATFORM_IOS)\n    sc->addRegisterCallback('+func+');\n#endif\n';
+                data = data.replace('\nUSING_NS_CC;', startMarker+include+endMarker+'\nUSING_NS_CC;');
+                data = data.replace('\n    sc->start();', startMarker+func+endMarker+'\n    sc->start();');
+            }
+            if('android' in params) {
+                var include = params['android']['include'];
+                var func = params['android']['function'];
+                include = '#if (CC_TARGET_PLATFORM == CC_PLATFORM_ANDROID)\n#include "'+include+'"\n#endif\n';
+                func = '#if (CC_TARGET_PLATFORM == CC_PLATFORM_ANDROID)\n    sc->addRegisterCallback('+func+');\n#endif\n';
+                data = data.replace('\nUSING_NS_CC;', startMarker+include+endMarker+'\nUSING_NS_CC;');
+                data = data.replace('\n    sc->start();', startMarker+func+endMarker+'\n    sc->start();');
+            }
+            fs.writeFileSync(fname, data);
+            install_log('inject', {'file': 'frameworks/runtime-src/Classes/AppDelegate.cpp', 're': '\n\\/\\/BEGIN_'+marker+'[\\s\\S]*?\\/\\/END_'+marker+'\n'});
+        },
+        gradleProject: function(projname, projpath) {
+            var settings_file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/settings.gradle');
+            var injection = `\ninclude ':${projname}'\nproject(':${projname}').projectDir = new File(settingsDir, '${projpath}')\n`;
+            var data = fs.readFileSync(settings_file).toString();
+            data += injection;
+            fs.writeFileSync(settings_file, data);
+            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/settings.gradle', 'str': injection});
+            
+            var build_file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/build.gradle');
+            data = fs.readFileSync(build_file).toString();
+            var injection2 = `    compile project(':${projname}')\n`;
+            data = data.replace('dependencies {\n', 'dependencies {\n'+injection2);
+            fs.writeFileSync(build_file, data);
+            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/app/build.gradle', 'str': injection2});
+        },
+        /*
+        androidJni: function(files) {
+            var injection = '';
+            for(key in files) {
+                injection = injection + files[key] + ' \\\n';
+            }
+            var fname = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk');
+            var data = fs.readFileSync(fname).toString();
+            data = data.replace('../../../Classes/AppDelegate.cpp \\\n', '../../../Classes/AppDelegate.cpp \\\n'+injection);
+            fs.writeFileSync(fname, data);
+            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk', 'str': injection});
+        },
+        */
+        add_xml_item: function(file, obj) {
+            var xpath = obj['path'],
+                tag = obj['tag'],
+                key = obj['key'],
+                xml = obj['xml'];
+            debug('Add xml item', file, obj);
+            var child = xml_append(file, xpath, tag, 'name=\''+key+'\'', xml);
+            if(file.startsWith(project_root)) {
+                file = file.substring(project_root.length);
+                var separator = "" + path.sep;
+                if(file.startsWith(separator)) {
+                    file = file.substring(separator.length);
+                }
+            }
+            install_log('xml', {'file': file, 'parent': xpath, 'xpath': child});
+        },
+    };
+    return fn;
+}
 
 function script_install(plugin_path, plugin, origin, script) {
     var prev = conf[plugin.name];
@@ -666,6 +705,7 @@ function script_install(plugin_path, plugin, origin, script) {
     var prjs = glob.sync(path.join(project_root,'frameworks/runtime-src/proj.ios_mac/*.xcodeproj'), {});
     if(typeof prjs !== 'undefined' && prjs.length > 0)
         xcode_project_file = path.join(prjs[0], 'project.pbxproj');
+    var functioner = Functioner(plugin_path);
 
     var default_scope = {
         'print': console.log,
@@ -1024,7 +1064,7 @@ function install(installpath, origin) {
                 if(fs.existsSync(path.join(installpath,'sdkbox.package'))) {
                     install_script = fs.readFileSync(path.join(installpath,'sdkbox.package'), 'utf8');
                 } else if(fs.existsSync(path.join(installpath, 'plugin', 'sdkbox.package'))) {
-                    installpath = path.join(installpath, 'plugin');
+                    installpath = path.join(installpath, 'plugin') + path.sep;
                     install_script = fs.readFileSync(path.join(installpath, 'sdkbox.package'), 'utf8');
                 }
                 if(install_script != null)
