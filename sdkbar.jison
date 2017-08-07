@@ -105,8 +105,13 @@ arg_list
       { $$ = [$1]; }
     | arg_list COMMA expression
       { $1.push($3); $$ = $1; }
-    | arg_list COMMA assignment
+    | arg_list COMMA named_parameter
       { $1.push($3); $$ = $1; }
+    ;
+
+named_parameter
+    : TOKEN '=' expression
+    { var par = {}; par[$1] = $3; $$ = par; }
     ;
 
 long_token

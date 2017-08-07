@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-const version = '0.0.2';
+const version = '0.0.3';
 
 const fs = require('fs');
 const et = require('elementtree');
@@ -16,6 +16,7 @@ const glob = require('glob');
 const xcode = require('xcode');
 const targz = require('targz');
 const deepmerge = require('deepmerge');
+const diff = require('diff');
 
 if (!String.prototype.startswith) {
   Object.defineProperty(String.prototype, 'startswith', {
@@ -195,6 +196,19 @@ function compareVersions(v1, v2) {
     }
 }
 
+function findCocosVersion() {
+    var file = path.join(project_root, 'frameworks/cocos2d-x/cocos/cocos2d.cpp');
+    var data = fs.readFileSync(file).toString();;
+    var m = data.match('cocos2d-x-([0-9\.]+)');
+    if(m) {
+        debug('Cocos version:', m[1]);
+        return m[1];
+    } else {
+        error('Cocos version not found');
+        return null;
+    }
+}
+
 /*******************
  *
  *  File utilities
@@ -291,24 +305,6 @@ function copyPathSync(source, target) {
     return result;
 }
 
-/*
-function lookup(dirpath, dir, process_patch, process_file, iterateLevel) {
-    iterateLevel = iterateLevel || 0;
-    var files = fs.readdirSync(dirpath+dir);
-    for(file of files) {
-        var fname = path.join(dir,file);
-        var stats = fs.lstatSync(dirpath+fname);
-        if(path.extname(file) == '.patch' && process_patch) {
-            process_patch(fname);
-        } else if (stats.isDirectory()) {
-            lookup(dirpath, fname, process_patch, process_file, iterateLevel + 1);
-        } else if (process_file) {
-            process_file(fname);
-        }
-    }
-}
-*/
-
 function removeEmptyDirs(dir) {
     while (true) {
         try {
@@ -337,6 +333,26 @@ function removeRecursively(dir) {
             fs.unlinkSync(dir);
         }
     }
+}
+
+function findPatch(plugin_path, basename, projectType, cocos_version) {
+    var src = path.join(plugin_path, basename+'.'+projectType+'.'+cocos_version+'.patch');
+    if(fs.existsSync(src)) return src;
+    src = path.join(plugin_path, basename+'.'+cocos_version+'.patch');
+    if(fs.existsSync(src)) return src;
+    // try to find the previous version patch
+    src = null;
+    var cver = cocos_version.split('.');
+    cver[0] = parseInt(cver[0]);
+    cver[1] = parseInt(cver[1]);
+    while(cver[1] > 0) {
+        cver[1] -= 1;
+        src = path.join(plugin_path, basename+'.'+projectType+'.'+cver[0]+'.'+cver[1]+'.patch');
+        if(fs.existsSync(src)) return src;
+        src = path.join(plugin_path, basename+'.'+cver[0]+'.'+cver[1]+'.patch');
+        if(fs.existsSync(src)) return src;
+    }
+    return null;
 }
 
 /*******************
@@ -498,7 +514,7 @@ function list() {
     console.log('');
 }
 
-function Functioner(plugin_path) {
+function Functioner(plugin_path, cocos_version) {
     var fn = {
         /************** SDKBOX methods **************/
         config_merge: function(orig, dest) {
@@ -527,8 +543,24 @@ function Functioner(plugin_path) {
                 }
             }
         },
-        apply_patch: function(arg1, arg2, arg3) {
-            warning('Warning: apply_patch is unimplemented yet!');
+        apply_patch: function(dest, params) {
+            //warning('Warning: apply_patch is unimplemented yet!', arguments);
+            var src = findPatch(plugin_path, path.basename(dest), 'js', cocos_version);
+            if(src == null) {
+                error('Patch not found', dest);
+                process.exit(1);
+            } else {
+                debug('Applying patch', src);
+                var patchContent = fs.readFileSync(src).toString();
+                var structPatch = diff.parsePatch(patchContent);
+                var fileContent = fs.readFileSync(dest).toString();
+                fileContent = diff.applyPatch(fileContent, structPatch);
+                if(fileContent === false) {
+                    error('Can not apply patch to', dest);
+                } else {
+                    fs.writeFileSync(dest, fileContent);
+                }
+            }
         },
         xcode_add_frameworks: function(frameworks) {
             xcode_add({}, frameworks, xcode_project_file);
@@ -565,8 +597,24 @@ function Functioner(plugin_path) {
                 fn.android_add_xml_item({path: '.', tag: 'uses-permission', key:perm, xml:'<uses-permission android:name="'+perm+'"/>'});
             }
         },
-        android_add_static_libraries: function() {
-            warning('Warning: android_add_static_libraries unimplemented yet!');
+        android_add_static_libraries: function(libs) {
+            var injection = '';
+            for(lib of libs) {
+                injection = injection + '\n' + lib + ' \\';
+            }
+            var fname = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk');
+            var data = fs.readFileSync(fname).toString();
+            var anchor = data.match(/(LOCAL_WHOLE_STATIC_LIBRARIES[^\n]*)/);
+            debug(anchor);
+            if(anchor) {
+                anchor = anchor[1];
+                data = data.replace(anchor, anchor+injection);
+            } else {
+                injection = 'LOCAL_WHOLE_STATIC_LIBRARIES = \\' + injection + '\n';
+                data = data + injection;
+            }
+            fs.writeFileSync(fname, data);
+            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk', 'str': injection});
         },
         android_add_calls: function(calls) {
             var injection = '\n';
@@ -598,8 +646,10 @@ function Functioner(plugin_path) {
             //warning('Warning: satisfies_cocos_version unimplemented yet!');
             for(var key in arguments) {
                 var arg = arguments[key];
-                if(arg.startsWith('3.'))
+                if(compareVersions(arg, cocos_version) > 0 && arg.substring(0, 1) == cocos_version.substring(0, 1)) {
+                    debug('Satisfies', arg, cocos_version);
                     return true;
+                }
             }
             return false;
         },
@@ -701,18 +751,19 @@ function script_install(plugin_path, plugin, origin, script) {
         'origin': origin,
         'variables': variables
     };
-    
+
+    var cocos_version = findCocosVersion();
     var prjs = glob.sync(path.join(project_root,'frameworks/runtime-src/proj.ios_mac/*.xcodeproj'), {});
     if(typeof prjs !== 'undefined' && prjs.length > 0)
         xcode_project_file = path.join(prjs[0], 'project.pbxproj');
-    var functioner = Functioner(plugin_path);
+    var functioner = Functioner(plugin_path, cocos_version);
 
     var default_scope = {
         'print': console.log,
         'True': true,
         'False': false,
         'COCOS_PROJECT_TYPE': 'js',
-        'COCOS_2DX_VERSION': '3.10',
+        'COCOS_2DX_VERSION': cocos_version,
         'SDKBOX_PACKAGE_NAME': plugin.name,
         'PLUGIN_PATH': plugin_path,
         'COCOS_RESOURCES_DIR': project_root+'/res/',
