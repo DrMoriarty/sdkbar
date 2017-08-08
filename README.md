@@ -16,7 +16,9 @@ Plugin manager for cocos2d-x with support sdkbox plugin format.
 ## Options
 
 `--verbose` shows a lot of debug output
+
 `--no-clean` don't clean install temp folder which usually is in ~/.sdkbar/cache
+
 `--variable|-v KEY=VALUE` set installation variable. Some plugins can use them to set up the plugin configuration.
 
 # Examples
@@ -56,3 +58,5 @@ Install SDKBOX plugin:
 ```
 sdkbar -i http://download.sdkbox.com/installer/v1/sdkbox-iap_v2.3.15.2.tar.gz
 ```
+
+Note: now you can update plugins with `--update` command only if them was installed from the git repository.
