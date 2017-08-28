@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-const version = '0.0.3';
+const version = '0.0.4';
 
 const fs = require('fs');
 const et = require('elementtree');
@@ -66,8 +66,8 @@ var logLevel = 1;
 
 function debug(str) {
     if(logLevel > 0) return;
-    var args = [Dim];
-    for(key in arguments) {
+    var args = [Dim+arguments[0]];
+    for(var key = 1; key < arguments.length; key++) {
         args.push(arguments[key]);
     }
     args.push(Reset);
@@ -76,8 +76,8 @@ function debug(str) {
 
 function log(str) {
     if(logLevel > 1) return;
-    var args = [Bright];
-    for(key in arguments) {
+    var args = [Bright+arguments[0]];
+    for(var key = 1; key < arguments.length; key++) {
         args.push(arguments[key]);
     }
     args.push(Reset);
@@ -86,7 +86,7 @@ function log(str) {
 
 function warning(str) {
     if(logLevel > 2) return;
-    var args = [FgYellow, 'Warning:'];
+    var args = [FgYellow+'Warning:'];
     for(key in arguments) {
         args.push(arguments[key]);
     }
@@ -96,7 +96,7 @@ function warning(str) {
 
 function error() {
     if(logLevel > 3) return;
-    var args = [FgRed, 'Error:'];
+    var args = [FgRed+'Error:'];
     for(key in arguments) {
         args.push(arguments[key]);
     }
@@ -117,6 +117,7 @@ var install_log_list = [];
 var variables = {};
 var xcode_project_file = null;
 var clean_temp = true;
+var skip_deps_errors = false
 
 function install_log(operation, arg) {
     install_log_list.push({'op': operation, 'arg': arg});
@@ -128,17 +129,21 @@ function help() {
 usage: sdkbar [options] <command>
 
 options:
- --verbose                    Show debug output
- -v|--variable KEY=VALUE      Set plugin variable
- --no-clean                   Don't clean the temp directory
+ --verbose                      Show debug output
+ -v|--variable KEY=VALUE        Set plugin variable
+ --no-clean                     Don't clean the temp directory
+ -f|--force                     Don't stop when unsatisfied dependencies
 
 command:
- -l|--list                    List all installed plugins
- -i|--install <url or path>   Install new plugin
- -r|--remove <plugin name>    Uninstall the installed plugin
- -u|--update <plugin name>    Update the plugin
- --updateall                  Update all installed plugins
- -h|--help                    This page
+ -l|--list                      List all installed plugins
+ -b|--list-box                  List all available plugins in SDKBOX server
+ -s|--search <word>             Search the plugins in SDKBOX server
+ -i|--install <url, path, name> Install new plugin
+ -r|--remove <plugin name>      Uninstall the installed plugin
+ -u|--update <plugin name>      Update the plugin
+ --updateall                    Update all installed plugins
+ --show <plugin name>           More information about plugin
+ -h|--help                      This page
 `);
 }
 
@@ -384,6 +389,30 @@ function download(uri, filename) {
     return deferred.promise;
 };
 
+function sdkbox_manifest(callback) {
+    var cache = path.join(process.env.HOME, '.sdkbar');
+    mkdirpSync(cache);
+    var manifest = path.join(cache, 'manifest.json');
+    try {
+        fs.unlinkSync(manifest);
+    } catch(e) {
+    }
+    download('http://download.sdkbox.com/installer/v1/manifest.json', manifest).then(function(result) {
+        try {
+            var manifestContent = JSON.parse(fs.readFileSync(manifest).toString());
+            callback && callback(null, manifestContent);
+        } catch(e) {
+            error('JSON parsing error:', manifest);
+            error(e);
+            callback && callback(e);
+        }
+    }, function(err) {
+        error('Can not download manifest file!');
+        callback && callback('Can not download manifest file!');
+    });
+}
+
+
 /*******************
  *
  *  XML utilities
@@ -514,6 +543,98 @@ function list() {
     console.log('');
 }
 
+function list_box() {
+    sync(function() {
+        var manifestContent = sdkbox_manifest.sync(null);
+        console.log('Available plugins:');
+        var packs = manifestContent['packages']
+        for(var pack in packs) {
+            if(pack === 'SDKBOX') continue;
+            var p = packs[pack];
+            var vers = '';
+            for(var v in p['versions']) {
+                if(vers.length > 0) vers += ', ';
+                vers += v;
+            }
+            console.log(pack, vers, '\t', p['description']);
+        }
+        console.log('');
+    });
+}
+
+function search(pattern) {
+    sync(function () {
+        var manifestContent = sdkbox_manifest.sync(null);
+        var pat = pattern.toLowerCase();
+        console.log('Search results:');
+        var packs = manifestContent['packages']
+        for(var pack in packs) {
+            if(pack === 'SDKBOX') continue;
+            var found = false;
+            var p = packs[pack];
+            if(pack.toLowerCase().includes(pat))
+                found = true;
+            else if(p['display_name'].toLowerCase().includes(pat))
+                found = true;
+            else if(p['description'].toLowerCase().includes(pat))
+                found = true;
+            if(found) {
+                var vers = '';
+                for(var v in p['versions']) {
+                    if(vers.length > 0) vers += ', ';
+                    vers += v;
+                }
+                console.log(pack, vers, '\t', p['description']);
+            }
+        }        
+        console.log('');
+    });
+}
+
+function info(pname) {
+    sync(function () {
+        var prev = conf[pname];
+        var installed = typeof prev !== 'undefined' && prev != null;
+        var manifestContent = sdkbox_manifest.sync(null);
+        var packs = manifestContent['packages']
+        for(var pack in packs) {
+            if(pack === pname) {
+                var p = packs[pack];
+                if(installed)
+                    log('Installed:', pack, '(', p['display_name'], ')');
+                else
+                    log(pack, '(', p['display_name'], ')');
+                console.log('Category:', p['category']);
+                var deps = p['dependence'];
+                if(typeof deps !== 'undefined' && deps != null && deps.length > 0) {
+                    console.log('Depends on:');
+                    for(var i of deps) {
+                        console.log('\t', i);
+                    }
+                }
+                var conflicts = p['conflict'];
+                if(typeof conflicts !== 'undefined' && conflicts != null && conflicts.length > 0) {
+                    console.log('Conflicts with:');
+                    for(var i of conflicts) {
+                        console.log('\t', i);
+                    }
+                }
+                var vers = p['versions'];
+                console.log('Versions:');
+                for(var i in vers) {
+                    if(installed && prev.version === i)
+                        console.log('*\t', i);
+                    else
+                        console.log('\t', i);
+                }
+                return true;
+            }
+        }
+        error('Plugin', pname, 'not found');
+        process.exit(1);
+    });
+}
+
 function Functioner(plugin_path, cocos_version) {
     var fn = {
         /************** SDKBOX methods **************/
@@ -567,6 +688,9 @@ function Functioner(plugin_path, cocos_version) {
         },
         xcode_add_sources: function(sources) {
             xcode_add(sources, {}, xcode_project_file);
+        },
+        xcode_add_linker_flags: function(flags) {
+            warning('xcode_add_linker_flags not implemented yet!');
         },
         android_copy_jars: function(jars) {
             var orig = path.join(plugin_path, 'android', 'libs');
@@ -637,10 +761,25 @@ function Functioner(plugin_path, cocos_version) {
             install_log('xml', {'file': 'frameworks/runtime-src/proj.android-studio/app/AndroidManifest.xml', 'parent': xpath, 'xpath': child});
         },
         android_set_app_platform: function(num) {
-            warning('Warning: android_set_app_platform unimplemented yet!');
+            warning('android_set_app_platform unimplemented yet!');
         },
         android_add_key_value: function(scope, key, value) {
-            warning('Warning: android_add_key_value unimplemented yet!');
+            warning('android_add_key_value unimplemented yet!');
+        },
+        android_add_element: function(parent, element, params, parent_params) {
+            warning('android_add_element not implemented yet!');
+        },
+        android_set_target: function(target_sdk) {
+            warning('android_set_target not implemented yet!');
+        },
+        android_has_library_reference: function(libname) {
+            warning('android_has_library_reference not implemented yet!');
+        },
+        android_add_library_reference: function(libname) {
+            warning('android_add_library_reference not implemented yet!');
+        },
+        android_studio_add_module: function(modname, libname) {
+            warning('android_studio_add_module not implemented yet!');
         },
         satisfies_cocos_version: function() {
             //warning('Warning: satisfies_cocos_version unimplemented yet!');
@@ -751,6 +890,8 @@ function script_install(plugin_path, plugin, origin, script) {
         'origin': origin,
         'variables': variables
     };
+    if(typeof plugin.deps !== 'undefined' && plugin.deps != null)
+        conf[plugin.name]['dependence'] = plugin.deps;
 
     var cocos_version = findCocosVersion();
     var prjs = glob.sync(path.join(project_root,'frameworks/runtime-src/proj.ios_mac/*.xcodeproj'), {});
@@ -770,12 +911,13 @@ function script_install(plugin_path, plugin, origin, script) {
         'COCOS_CLASSES_DIR': project_root+'/frameworks/runtime-src/Classes/',
         'ANDROID_ACTIVITY_NAME': 'AppActivity',
         'ANDROID_MK_USES_WILDCARDS': false,
-        'ANDROID_ACTIVITY_PATH': project_root+'/frameworks/runtime-src/proj.android-studio/app/src/org/cocos2dx/javascript/',
-        'ANDROID_COCOS_SRC_DIR': project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/src/org/cocos2dx/lib/',
+        'ANDROID_ACTIVITY_PATH'     : project_root+'/frameworks/runtime-src/proj.android-studio/app/src/org/cocos2dx/javascript/',
+        'ANDROID_COCOS_SRC_DIR'     : project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/src/org/cocos2dx/lib/',
+        'ANDROID_LIBS_DIR'          : project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/libs/',
         'ANDROID_COCOS_PACKAGE_ROOT': project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/',
         'ANDROID_STUDIO_PROJECT_DIR': project_root+'/frameworks/runtime-src/proj.android-studio/',
-        'ANDROID_PROJECT_DIR': project_root+'/frameworks/runtime-src/proj.android/',
-        'IOS_PROJECT_DIR': project_root+'/frameworks/runtime-src/proj.ios_mac/',
+        'ANDROID_PROJECT_DIR'       : project_root+'/frameworks/runtime-src/proj.android/',
+        'IOS_PROJECT_DIR'           : project_root+'/frameworks/runtime-src/proj.ios_mac/',
         'XCODE_PROJECT_DIR': prjs[0],
         'XCODE_PROJECT': xcode_project_file,
         'sdkbar': functioner,
@@ -790,6 +932,10 @@ function script_install(plugin_path, plugin, origin, script) {
             } else if(typeof block2 !== 'undefined' && block2 !== null) {
                 this.do_block(block2);
             }
+        },
+        'NOT': function(arg1) {
+            arg1 = this.do_command(arg1);
+            return !arg1;
         },
         'AND': function(arg1, arg2) {
             arg1 = this.do_command(arg1);
@@ -864,7 +1010,7 @@ function script_install(plugin_path, plugin, origin, script) {
 
     var str_re1 = /^\'([^\']*)\'$/;
     var str_re2 = /^\"([^\"]*)\"$/;
-    var str_re3 = /^\'\'\'([^\']+)\'\'\'$/;
+    var str_re3 = /^\'\'\'([^\"]+?)\'\'\'$/;
     var int_re = /^[0-9]+$/;
     var sub_token = /^([^\.]+)\./;
     var yy = {
@@ -1057,94 +1203,183 @@ function get_remote_plugin(uri, callback) {
     }
 }
 
-function install(installpath, origin) {
-    if(/^http/.test(installpath)) {
+function install_remote(url, origin, deps, callback ) {
+    if(/^http/.test(url)) {
         // remote install
         sync(function() {
             try {
-                debug('Remote install', installpath);
-                var dir = get_remote_plugin.sync(null, installpath);
+                debug('Remote install', url);
+                var dir = get_remote_plugin.sync(null, url);
                 debug('Ready to install downloaded plugin:', dir);
-                install(dir, installpath);
+                install_local(dir, origin || url, deps);
                 if(clean_temp) {
                     debug('Remove plugin temp directory', dir);
                     removeRecursively(dir);
                 }
+                return true;
             } catch(err) {
                 error(err);
                 process.exit(1);
             }
-        });
+        }, callback);
     } else {
-        // local install
-        var plugin = null;
-        var install_script = null;
-        var orgn = origin || installpath;
-        try {
-            if(fs.existsSync(path.join(installpath,'package.json')) && fs.existsSync(path.join(installpath,'sdkbar.package'))) {
-                // install SDKBAR plugin
-                plugin = JSON.parse(fs.readFileSync(installpath+'/package.json', 'utf8'));
-                install_script = fs.readFileSync(installpath+'/sdkbar.package', 'utf8');
-                var prev = conf[plugin.name];
-                if(typeof prev != 'undefined' && prev != null) {
-                    if(compareVersions(prev.version, plugin.version) > 0) {
-                        // try to update
-                        log('Update', prev.name, 'from version', prev.version, 'to', plugin.version);
-                        remove(prev.name);
-                    } else {
-                        warning('Skip already installed plugin:', plugin.name, plugin.version);
-                        return;
-                    }
-                }
-                console.log('Installing', plugin.name, 'version', plugin.version, 'from', installpath);
-                script_install(installpath, plugin, orgn, install_script);
-            } else {
-                // install SDKBOX plugin
-                console.log('Installing SDKBOX plugin from', installpath);
-                var plugin_name = 'generic-sdkbox-plugin', plugin_version = 'unknown';
-                var re = /([a-z-]+)_v([0-9\.]+)$/;
-                var base = path.basename(installpath)
-                if(re.test(base)) {
-                    var result = base.match(re);
-                    if(result != null) {
-                        plugin_name = result[1];
-                        plugin_version = result[2];
-                        debug('Plugin:', plugin_name, 'version:', plugin_version);
-                    }
-                }
-                if(fs.existsSync(path.join(installpath,'sdkbox.package'))) {
-                    install_script = fs.readFileSync(path.join(installpath,'sdkbox.package'), 'utf8');
-                } else if(fs.existsSync(path.join(installpath, 'plugin', 'sdkbox.package'))) {
-                    installpath = path.join(installpath, 'plugin') + path.sep;
-                    install_script = fs.readFileSync(path.join(installpath, 'sdkbox.package'), 'utf8');
-                }
-                if(install_script != null)
-                    script_install(installpath, {'name': plugin_name, 'version': plugin_version}, orgn, install_script);
-                else {
-                    error('Plugin format not supported');
+        error('Wrong URI:', url);
+        callback && callback('Wrong URI');
+    }
+}
+
+function install_sdkbox(pname, origin, callback) {
+    sync(function() {
+        var prev = conf[pname];
+        var manifestContent = sdkbox_manifest.sync(null);
+        var packs = manifestContent['packages'];
+        var p = packs[pname];
+
+        if(typeof p === 'undefined' || p === null) {
+            if(typeof prev != 'undefined' && prev != null) {
+                error('Plugin', pname, 'not found');
+                if(!skip_deps_errors)
                     process.exit(1);
+                else {
+                    callback && callback('Plugin not found');
+                }
+            } else {
+                // not found plugin in manifest but plugin already installed from unknown source
+                warning('Plugin', pname, 'already installed');
+                callback && callback(null, true);
+            }
+            return;
+        }
+
+        var fname = null;
+        var conflicts = p['conflict'];
+        if(typeof conflicts !== 'undefined' && conflicts != null) {
+            for(cn of conflicts) {
+                var pn = conf[cn];
+                if(typeof pn != null && pn != null) {
+                    error(pname, 'conflicts with', cn);
+                    error(pn.name, 'installed version:', pn.version);
+                    if(!skip_deps_errors)
+                        process.exit(1);
                 }
             }
-        } catch (err) {
-            if(err.stack)
-                error(err.stack);
-            else
-                error(err);
-            if(err["code"] === "ENOENT") {
-                // no such file
-                error(err);
-                process.exit(1);
+        }
+        var deps = p['dependence'];
+        if(typeof deps !== 'undefined' && deps != null) {
+            for(dp of deps) {
+                install_sdkbox.sync(null, dp, dp);
+            }
+        }
+        for(var v in p['versions']) {
+            if(typeof prev != 'undefined' && prev != null && compareVersions(prev.version, v) <= 0) {
+                // skip lower version
+                continue;
+            }
+            var vd = p['versions'][v];
+            if(vd && vd['v3']) {
+                fname = 'http://download.sdkbox.com/installer/v1/' + vd['v3']['bundle'];
+            }
+        }
+        if(fname) {
+            install_remote.sync(null, fname, pname, deps);
+            callback && callback(null, true);
+        } else {
+            if(typeof prev != 'undefined' && prev != null) {
+                warning('Plugin', pname, 'already installed');
+                callback && callback(null, true);
             } else {
-                if(typeof err['message'] !== 'undefined')
-                    error(err['message'])
-                else {
-                    error(err);
+                warning('Plugin', pname, 'not found');
+                callback('Plugin not found');
+            }
+        }
+    }, callback);
+}
+
+function install_local(installpath, origin, deps) {
+    // local install
+    var plugin = null;
+    var install_script = null;
+    var orgn = origin || installpath;
+    deps = deps || [];
+    try {
+        if(fs.existsSync(path.join(installpath,'package.json')) && fs.existsSync(path.join(installpath,'sdkbar.package'))) {
+            // install SDKBAR plugin
+            plugin = JSON.parse(fs.readFileSync(installpath+'/package.json', 'utf8'));
+            install_script = fs.readFileSync(installpath+'/sdkbar.package', 'utf8');
+            var prev = conf[plugin.name];
+            if(typeof prev != 'undefined' && prev != null) {
+                if(compareVersions(prev.version, plugin.version) > 0) {
+                    // try to update
+                    log('Update', prev.name, 'from version', prev.version, 'to', plugin.version);
+                    remove(prev.name);
+                } else {
+                    warning('Skip already installed plugin:', plugin.name, plugin.version);
+                    return;
                 }
+            }
+            var deps = [];
+            var sdk_deps = plugin['sdk-dependence'];
+            if(sdk_deps !== undefined) {
+                for(var d in sdk_deps) {
+                    var pl = conf[d];
+                    if(pl !== undefined) {
+                        debug('Found dependency', d);
+                    } else {
+                        error('Dependency', d, 'not installed');
+                        if(!skip_deps_errors)
+                            process.exit(1);
+                    }
+                }
+            }
+            plugin['deps'] = deps;
+            console.log('Installing', plugin.name, 'version', plugin.version, 'from', installpath);
+            script_install(installpath, plugin, orgn, install_script);
+        } else {
+            // install SDKBOX plugin
+            console.log('Installing SDKBOX plugin from', installpath);
+            var plugin_name = 'generic-sdkbox-plugin', plugin_version = 'unknown';
+            var re = /sdkbox-([a-z-]+)_v([0-9\.]+)$/;
+            var base = path.basename(installpath)
+            if(re.test(base)) {
+                var result = base.match(re);
+                if(result != null) {
+                    plugin_name = result[1];
+                    plugin_version = result[2];
+                    debug('Plugin:', plugin_name, 'version:', plugin_version);
+                }
+            }
+            if(fs.existsSync(path.join(installpath,'sdkbox.package'))) {
+                install_script = fs.readFileSync(path.join(installpath,'sdkbox.package'), 'utf8');
+            } else if(fs.existsSync(path.join(installpath, 'plugin', 'sdkbox.package'))) {
+                installpath = path.join(installpath, 'plugin') + path.sep;
+                install_script = fs.readFileSync(path.join(installpath, 'sdkbox.package'), 'utf8');
+            }
+            if(install_script != null)
+                script_install(installpath, {'name': plugin_name, 'version': plugin_version, 'deps': deps}, orgn, install_script);
+            else {
+                error('Plugin format not supported');
                 process.exit(1);
             }
         }
-        saveConf();
+    } catch (err) {
+        if(err.stack)
+            error(err.stack);
+        else
+            error(err);
+        if(err["code"] === "ENOENT") {
+            // no such file
+            error(err);
+            process.exit(1);
+        } else {
+            if(typeof err['message'] !== 'undefined')
+                error(err['message'])
+            else {
+                error(err);
+            }
+            process.exit(1);
+        }
     }
+    saveConf();
 }
 
 function remove(name) {
@@ -1152,6 +1387,24 @@ function remove(name) {
     if(typeof cc == 'undefined' || cc == null) {
         console.error('Plugin', name, 'not found!');
         process.exit(1);
+    }
+    for(var pl in conf) {
+        if(name === pl) continue;
+        var plugin = conf[pl];
+        if(plugin !== undefined) {
+            var deps = plugin.dependence;
+            if(deps !== undefined) {
+                for(var d of deps) {
+                    if(d === name) {
+                        debug(pl, 'depends on', d);
+                        // some plugin depends on the removing one
+                        error('Plugin', pl, 'depends on', name);
+                        if(!skip_deps_errors)
+                            process.exit(1);
+                    }
+                }
+            }
+        }
     }
     var origin = cc.origin;
     var log = cc['install_log'];
@@ -1167,10 +1420,15 @@ function remove(name) {
                         arg = path.join(project_root, arg);
                     if(fs.existsSync(arg)) {
                         fs.unlinkSync(arg);
-                    } else if(fs.lstatSync(arg).isSymbolicLink()) {
-                        fs.unlinkSync(arg);
                     } else {
-                        warning('Warning: file not found', arg);
+                        try {
+                            if(fs.lstatSync(arg).isSymbolicLink())
+                                fs.unlinkSync(arg);
+                            else
+                                warning('Warning: file not found', arg);
+                        } catch (e) {
+                            warning('Warning: file not found', arg);
+                        }
                     }
                     removeEmptyDirs(path.dirname(arg));
                 }
@@ -1270,6 +1528,8 @@ args.forEach(function (val, index, array) {
             tasks.push(help);
         } else if(command === 'list') {
             tasks.push(list);
+        } else if(command === 'list-box') {
+            tasks.push(list_box);
         } else if(command === 'updateall') {
             // update all plugins
             tasks.push(update);
@@ -1277,6 +1537,8 @@ args.forEach(function (val, index, array) {
             logLevel = 0;
         } else if(command === 'no-clean') {
             clean_temp = false;
+        } else if(command === 'force') {
+            skip_deps_errors = true;
         }
     } else if(/^-\w$/.test(val)) {
         command = val.substring(1);
@@ -1284,17 +1546,25 @@ args.forEach(function (val, index, array) {
             tasks.push(help);
         } else if(command === 'l') {
             tasks.push(list);
+        } else if(command === 'b') {
+            tasks.push(list_box);
+        } else if(command === 'f') {
+            skip_deps_errors = true;
         }
     } else if(command != null) {
         argument = val;
         if(command === 'install' || command === 'i') {
             if(/^http/.test(argument)) {
                 // remote origin
-            } else {
+                tasks.push(install_remote.bind(null, argument));
+            } else if(argument.includes(path.sep)) {
                 // local origin
                 argument = path.resolve(argument);
+                tasks.push(install_local.bind(null, argument));
+            } else {
+                // sdkbox plugin name
+                tasks.push(install_sdkbox.bind(null, argument));
             }
-            tasks.push(install.bind(null, argument));
         } else if(command === 'remove' || command === 'r') {
             tasks.push(remove.bind(null, argument));
         } else if(command === 'update' || command === 'u') {
@@ -1302,6 +1572,10 @@ args.forEach(function (val, index, array) {
             tasks.push(update.bind(null, argument));
         } else if(command === 'variable' || command === 'v') {
             setVariable(argument);
+        } else if(command === 'search' || command === 's') {
+            tasks.push(search.bind(null, argument));
+        } else if(command === 'show') {
+            tasks.push(info.bind(null, argument));
         } else if(command != null) {
             error('Wrong command:', command);
             help();

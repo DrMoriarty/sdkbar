@@ -1,6 +1,6 @@
 {
   "name": "sdkbar",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Plugin manager for cocos2d-x",
   "repository": {
     "type": "git",

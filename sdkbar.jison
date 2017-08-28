@@ -5,6 +5,7 @@
 %ebnf
 
 /* operator associations and precedence */
+%left 'NOT'
 %left 'AND' 'OR'
 %left 'EQ' 'NE'
 %left '+' '-'
@@ -63,6 +64,8 @@ object_declaration
 object
     : object_start object_declaration object_end
     { $$ = $2; }
+    | object_start object_end
+    { $$ = {}; }
     ;
 
 operand
@@ -80,6 +83,8 @@ operand
 expression
     : operand
     | object
+    | NOT expression
+    { $$ = ['NOT', $2]; }
     | expression AND expression
     { $$ = ['AND', $1, $3]; }
     | expression OR expression
@@ -144,6 +149,7 @@ line
     : if_statement
     | assignment
     | function_call
+    | string
     ;
 
 blockcontent

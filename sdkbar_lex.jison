@@ -1,13 +1,15 @@
 /* lexical grammar */
 
-%s expect_object
+%s noindendation
 
 %%
 
 \#[^\n]*                /* return 'COMMENT'; */
-"{"                     { this.begin('expect_object'); return '{'; }
-<expect_object>[\s\n]+  /* skip space in object declaration */
-<expect_object>"}"      { this.popState(); return '}'; }
+"{"                     { this.begin('noindendation'); return '{'; }
+"["                     { this.begin('noindendation'); return '['; }
+<noindendation>[\s\n]+  /* skip space in object declaration */
+<noindendation>"}"      { this.popState(); return '}'; }
+<noindendation>"]"      { this.popState(); return ']'; }
 <INITIAL>[\s]*<<EOF>>		%{
                           // remaining DEDENTs implied by EOF, regardless of tabs/spaces
                           parser.forceDedent = parser.forceDedent || 0;
@@ -53,7 +55,7 @@
                         %}
 [\s]+                    /*  skip space */
 [0-9]+("."[0-9]+)?\b    return 'NUMBER';
-\'\'\'[^\']+\'\'\'      return 'MULTILINE_STRING'
+\'\'\'[^\"]+?\'\'\'     return 'MULTILINE_STRING'
 \"[^\"]*\"              return 'STRING';
 \'[^\']*\'              return 'STRING';
 "*"                     return '*'
@@ -64,11 +66,10 @@
 "!="                    return 'NE'
 "and"                   return 'AND'
 "or"                    return 'OR'
+"not"                   return 'NOT'
 "="                     return '='
 "("                     return '('
 ")"                     return ')'
-"["                     return '['
-"]"                     return ']'
 \.                      return 'DOT'
 ","                     return 'COMMA'
 ":"                     return ':'
