@@ -55,6 +55,7 @@
                         %}
 [\s]+                    /*  skip space */
 [0-9]+("."[0-9]+)?\b    return 'NUMBER';
+\"\"\"[^\']+?\"\"\"     return 'MULTILINE_STRING'
 \'\'\'[^\"]+?\'\'\'     return 'MULTILINE_STRING'
 \"[^\"]*\"              return 'STRING';
 \'[^\']*\'              return 'STRING';

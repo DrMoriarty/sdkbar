@@ -707,54 +707,56 @@ case 10:return 9;
 break;
 case 11:return 16
 break;
-case 12:return 15;
+case 12:return 16
 break;
 case 13:return 15;
 break;
-case 14:return 38
+case 14:return 15;
 break;
-case 15:return 39
+case 15:return 38
 break;
-case 16:return 37
+case 16:return 39
 break;
-case 17:return 36
+case 17:return 37
 break;
-case 18:return 34
+case 18:return 36
 break;
-case 19:return 35
+case 19:return 34
 break;
-case 20:return 32
+case 20:return 35
 break;
-case 21:return 33
+case 21:return 32
 break;
-case 22:return 31
+case 22:return 33
 break;
-case 23:return 43
+case 23:return 31
 break;
-case 24:return 40
+case 24:return 43
 break;
-case 25:return 41
+case 25:return 40
 break;
-case 26:return 44
+case 26:return 41
 break;
-case 27:return 26
+case 27:return 44
 break;
-case 28:return 24
+case 28:return 26
 break;
-case 29:return 46
+case 29:return 24
 break;
-case 30:return 48
+case 30:return 46
 break;
-case 31:return 28
+case 31:return 48
 break;
-case 32:return 29
+case 32:return 28
 break;
-case 33:return 6
+case 33:return 29
+break;
+case 34:return 6
 break;
 }
 },
-rules: [/^(?:#[^\n]*)/,/^(?:\{)/,/^(?:\[)/,/^(?:[\s\n]+)/,/^(?:\})/,/^(?:\])/,/^(?:[\s]*$)/,/^(?:[\n\r]+[\s]*(?![^\n\r]))/,/^(?:[\n\r][\s]*)/,/^(?:[\s]+)/,/^(?:[0-9]+(\.[0-9]+)?\b)/,/^(?:'''[^\"]+?''')/,/^(?:"[^\"]*")/,/^(?:'[^\']*')/,/^(?:\*)/,/^(?:\/)/,/^(?:-)/,/^(?:\+)/,/^(?:==)/,/^(?:!=)/,/^(?:and\b)/,/^(?:or\b)/,/^(?:not\b)/,/^(?:=)/,/^(?:\()/,/^(?:\))/,/^(?:\.)/,/^(?:,)/,/^(?::)/,/^(?:if\b)/,/^(?:else:)/,/^(?:True\b)/,/^(?:False\b)/,/^(?:[a-zA-Z_][a-zA-Z_0-9]*)/],
-conditions: {"noindendation":{"rules":[0,1,2,3,4,5,7,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33],"inclusive":true},"INITIAL":{"rules":[0,1,2,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33],"inclusive":true}}
+rules: [/^(?:#[^\n]*)/,/^(?:\{)/,/^(?:\[)/,/^(?:[\s\n]+)/,/^(?:\})/,/^(?:\])/,/^(?:[\s]*$)/,/^(?:[\n\r]+[\s]*(?![^\n\r]))/,/^(?:[\n\r][\s]*)/,/^(?:[\s]+)/,/^(?:[0-9]+(\.[0-9]+)?\b)/,/^(?:"""[^\']+?""")/,/^(?:'''[^\"]+?''')/,/^(?:"[^\"]*")/,/^(?:'[^\']*')/,/^(?:\*)/,/^(?:\/)/,/^(?:-)/,/^(?:\+)/,/^(?:==)/,/^(?:!=)/,/^(?:and\b)/,/^(?:or\b)/,/^(?:not\b)/,/^(?:=)/,/^(?:\()/,/^(?:\))/,/^(?:\.)/,/^(?:,)/,/^(?::)/,/^(?:if\b)/,/^(?:else:)/,/^(?:True\b)/,/^(?:False\b)/,/^(?:[a-zA-Z_][a-zA-Z_0-9]*)/],
+conditions: {"noindendation":{"rules":[0,1,2,3,4,5,7,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34],"inclusive":true},"INITIAL":{"rules":[0,1,2,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34],"inclusive":true}}
 });
 _iemitstack = [0];
 return lexer;

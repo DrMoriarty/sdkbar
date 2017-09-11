@@ -191,9 +191,9 @@ function compareVersions(v1, v2) {
             var i1 = parseInt(vv1[ind]);
             var i2 = parseInt(vv2[ind]);
             if(i1 > i2) {
-                return -1;
+                return -2;
             } else if(i1 < i2) {
-                return 1;
+                return 2;
             } else {
                 ind += 1;
             }
@@ -371,7 +371,10 @@ function download(uri, filename) {
     var protocol = url.parse(uri).protocol.slice(0, -1);
     var deferred = Q.defer();
     var onError = function (e) {
-        fs.unlinkSync(filename);
+        try {
+            fs.unlinkSync(filename);
+        } catch (e) {
+        }
         deferred.reject(e);
     }
     require(protocol).get(uri, function(response) {
@@ -517,6 +520,8 @@ function xcode_add(sources, frameworks, xcodeproj) {
 function xcode_remove(sources, frameworks, xcodeproj) {
     myProj = xcode.project(xcodeproj);
     myProj.parseSync();
+    sources = sources || {};
+    frameworks = frameworks || {};
     var pluginsGroup = myProj.findPBXGroupKey({ name: 'Classes' });
     for(var key in sources) {
         var src = sources[key];
@@ -525,6 +530,33 @@ function xcode_remove(sources, frameworks, xcodeproj) {
     for(var key in frameworks) {
         var frmw = frameworks[key];
         myProj.removeFramework(frmw);
+    }
+    fs.writeFileSync(xcodeproj, myProj.writeSync());
+}
+
+function xcode_add_lflags(flags, xcodeproj) {
+    myProj = xcode.project(xcodeproj);
+    myProj.parseSync();
+    for(var flag in flags) {
+        myProj.addToOtherLinkerFlags(flag);
+    }
+    fs.writeFileSync(xcodeproj, myProj.writeSync());
+    if(xcodeproj.startsWith(project_root)) {
+        xcodeproj = xcodeproj.substring(project_root.length);
+        var separator = "" + path.sep;
+        if(xcodeproj.startsWith(separator)) {
+            xcodeproj = xcodeproj.substring(separator.length);
+        }
+    }
+
+    install_log('xcode', {'proj': xcodeproj, 'lflags': flags});
+}
+
+function xcode_rm_lflags(flags, xcodeproj) {
+    myProj = xcode.project(xcodeproj);
+    myProj.parseSync();
+    for(var flag in flags) {
+        myProj.removeFromOtherLinkerFlags(flag);
     }
     fs.writeFileSync(xcodeproj, myProj.writeSync());
 }
@@ -690,7 +722,7 @@ function Functioner(plugin_path, cocos_version) {
             xcode_add(sources, {}, xcode_project_file);
         },
         xcode_add_linker_flags: function(flags) {
-            warning('xcode_add_linker_flags not implemented yet!');
+            xcode_add_lflags(flags, xcode_project_file);
         },
         android_copy_jars: function(jars) {
             var orig = path.join(plugin_path, 'android', 'libs');
@@ -764,28 +796,73 @@ function Functioner(plugin_path, cocos_version) {
             warning('android_set_app_platform unimplemented yet!');
         },
         android_add_key_value: function(scope, key, value) {
-            warning('android_add_key_value unimplemented yet!');
+            //warning('android_add_key_value unimplemented yet!');
         },
-        android_add_element: function(parent, element, params, parent_params) {
-            warning('android_add_element not implemented yet!');
+        android_add_element: function(parent, element, attributes, params) {
+            var elKey = null;
+            var xml = '<'+element+' ';
+            for(var key in attributes) {
+                if(key === 'name')
+                    elKey = 'android:name=\''+attributes[key]+'\'';
+                xml += 'android:'+key+'="'+attributes[key]+'" ';
+            }
+            xml += '/>';
+            var file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/AndroidManifest.xml');
+            var child = xml_append(file, parent, element, elKey, xml);
+            install_log('xml', {'file': 'frameworks/runtime-src/proj.android-studio/app/AndroidManifest.xml', 'parent': parent, 'xpath': child});
         },
         android_set_target: function(target_sdk) {
-            warning('android_set_target not implemented yet!');
+            //warning('android_set_target not implemented yet!');
         },
         android_has_library_reference: function(libname) {
-            warning('android_has_library_reference not implemented yet!');
+            //warning('android_has_library_reference not implemented yet!');
+            var file = path.join(project_root, 'frameworks/runtime-src/proj.android/project.properties');
+            var content = fs.readFileSync(file).toString();
+            return content.indexOf(libname) >= 0;
         },
         android_add_library_reference: function(libname) {
-            warning('android_add_library_reference not implemented yet!');
+            //warning('android_add_library_reference not implemented yet!');
+            var file = path.join(project_root, 'frameworks/runtime-src/proj.android/project.properties');
+            var content = fs.readFileSync(file).toString();
+            var lines = content.split(/[\n\r]/);
+            var number = 1;
+            for(line in lines) {
+                var match = line.match(/android\.library\.reference\.([\d]+)/);
+                if(match != null) {
+                    number = parseInt(match[1])+1;
+                }
+            }
+            var injection = '\nandroid.library.reference.'+number+'='+libname.replace(path.join(project_root, 'frameworks'), '../..');
+            content += injection;
+            fs.writeFileSync(file, content);
+            install_log('inject', {'file': 'frameworks/runtime-src/proj.android/project.properties', 'str': injection});
         },
         android_studio_add_module: function(modname, libname) {
-            warning('android_studio_add_module not implemented yet!');
+            //warning('android_studio_add_module not implemented yet!');
+            var settings_file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/settings.gradle');
+            var projpath = libname.replace(path.join(project_root, 'frameworks'), '../..');
+            var injection = `\ninclude ':${modname}'\nproject(':${modname}').projectDir = new File(settingsDir, '${projpath}')\n`;
+            var data = fs.readFileSync(settings_file).toString();
+            data += injection;
+            fs.writeFileSync(settings_file, data);
+            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/settings.gradle', 'str': injection});
+        },
+        android_satisfies_sdk_version: function(ver) {
+            //warning('android_satisfies_sdk_version not implemented yet!');
+            var sdkver = '4.4.2'; // android-19 api level
+            var com = compareVersions(ver, sdkver);
+            return com == 0 || com == 1;
+        },
+        android_add_activity: function(activity, attributes) {
+            
         },
         satisfies_cocos_version: function() {
             //warning('Warning: satisfies_cocos_version unimplemented yet!');
             for(var key in arguments) {
                 var arg = arguments[key];
-                if(compareVersions(arg, cocos_version) > 0 && arg.substring(0, 1) == cocos_version.substring(0, 1)) {
+                var comp = compareVersions(arg, cocos_version)
+                if(comp == 0 || comp == 1) {
+                    // they are equal or cocos version is longer then arg
                     debug('Satisfies', arg, cocos_version);
                     return true;
                 }
@@ -801,6 +878,9 @@ function Functioner(plugin_path, cocos_version) {
         },
         puts: function(data) {
             log.apply(this, arguments);
+        },
+        add_manual_step: function(text) {
+            log(text);
         },
         
         /************** SdkBar methods **************/
@@ -985,6 +1065,7 @@ function script_install(plugin_path, plugin, origin, script) {
             return arg1;
         },
         'INDEX': function(ar, ind) {
+            ar = this.do_command(ar);
             if(ar instanceof Array) {
                 return ar[ind];
             } else if(typeof ar === 'string') {
@@ -1011,6 +1092,7 @@ function script_install(plugin_path, plugin, origin, script) {
     var str_re1 = /^\'([^\']*)\'$/;
     var str_re2 = /^\"([^\"]*)\"$/;
     var str_re3 = /^\'\'\'([^\"]+?)\'\'\'$/;
+    var str_re4 = /^\"\"\"([^\']+?)\"\"\"$/;
     var int_re = /^[0-9]+$/;
     var sub_token = /^([^\.]+)\./;
     var yy = {
@@ -1044,18 +1126,22 @@ function script_install(plugin_path, plugin, origin, script) {
                     result.push(this.resolve_name(n[k]));
                 }
                 return result;
+            } else if(str_re4.test(n)) {
+                // multiline string
+                var match = n.match(str_re4);
+                return match[1].replace(/\\n/g, '\n');
             } else if(str_re3.test(n)) {
                 // multiline string
                 var match = n.match(str_re3);
-                return match[1];
+                return match[1].replace(/\\n/g, '\n');
             } else if(str_re1.test(n)) {
                 // string
                 var match = n.match(str_re1);
-                return match[1];
+                return match[1].replace(/\\n/g, '\n');
             } else if(str_re2.test(n)) {
                 // string
                 var match = n.match(str_re2);
-                return match[1];
+                return match[1].replace(/\\n/g, '\n');
             } else if(int_re.test(n)) {
                 // integer
                 return parseInt(n);
@@ -1463,9 +1549,13 @@ function remove(name) {
             } else if(op['op'] === 'xcode') {
                 var arg = op['arg'];
                 var proj = path.join(project_root, arg['proj']);
-                var sources = arg['sources'] || {};
-                var frameworks = arg['frameworks'] || {};
-                xcode_remove(sources, frameworks, proj);
+                var sources = arg['sources'] || null;
+                var frameworks = arg['frameworks'] || null;
+                var lflags = arg['lflags'] || null;
+                if(lflags != null)
+                    xcode_rm_lflags(lflags, proj);
+                if(sources != null || frameworks != null)
+                    xcode_remove(sources, frameworks, proj);
             } else {
                 error('Unknown install operation:', op['op'], 'with arg:', op['arg']);
             }
