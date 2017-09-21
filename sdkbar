@@ -1091,8 +1091,8 @@ function script_install(plugin_path, plugin, origin, script) {
 
     var str_re1 = /^\'([^\']*)\'$/;
     var str_re2 = /^\"([^\"]*)\"$/;
-    var str_re3 = /^\'\'\'([^\"]+?)\'\'\'$/;
-    var str_re4 = /^\"\"\"([^\']+?)\"\"\"$/;
+    var str_re3 = /^\'\'\'([\s\S]+?)\'\'\'$/;
+    var str_re4 = /^\"\"\"([\s\S]+?)\"\"\"$/;
     var int_re = /^[0-9]+$/;
     var sub_token = /^([^\.]+)\./;
     var yy = {
