@@ -431,15 +431,15 @@ function xml_append(fname, parent, tag, key, xml) {
         xpath = xpath + '[@'+key+']';
     var existed = etree.find(xpath);
     if(existed !== null && typeof existed !== 'undefined') {
-        warning('Tag already exist:', et.tostring(existed, {'xml_declaration': false, 'indent': true}));
+        warning('Tag already exist:', et.tostring(existed, {'xml_declaration': false, 'indent': 8}));
     } else {
         var parent = etree.find(parent);
         var node = et.parse(xml);
         parent.append(node._root);
-        //console.log(et.tostring(parent, {'xml_declaration': false, 'indent': true}));
-        debug('Append XML tag:', et.tostring(node._root, {'xml_declaration': false, 'indent': true}));
+        //console.log(et.tostring(parent, {'xml_declaration': false, 'indent': 8}));
+        debug('Append XML tag:', et.tostring(node._root, {'xml_declaration': false, 'indent': 8}));
     }
-    var xml = etree.write({'xml_declaration': true, 'indent': true, 'encoding': 'UTF-8'});
+    var xml = etree.write({'xml_declaration': true, 'indent': 8, 'encoding': 'UTF-8'});
     fs.writeFileSync(fname, xml);
     return xpath;
 }
@@ -461,7 +461,7 @@ function xml_remove(fname, parent, xpath) {
     } else {
         warning('Xml elements not found:', xpath);
     }
-    var xml = etree.write({'xml_declaration': true, 'indent': true, 'encoding': 'UTF-8'});
+    var xml = etree.write({'xml_declaration': true, 'indent': 8, 'encoding': 'UTF-8'});
     fs.writeFileSync(fname, xml);
 }
 
