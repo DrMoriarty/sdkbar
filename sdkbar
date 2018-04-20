@@ -112,12 +112,16 @@ function error() {
 
 var proj = null;
 var conf = null;
+var sdkbox_conf = null;
 var project_root = path.resolve("./");
 var install_log_list = [];
 var variables = {};
 var xcode_project_file = null;
 var clean_temp = true;
 var skip_deps_errors = false
+
+const android_project_dir = 'frameworks/runtime-src/proj.android-old';
+const android_studio_project_dir = 'frameworks/runtime-src/proj.android';
 
 function install_log(operation, arg) {
     install_log_list.push({'op': operation, 'arg': arg});
@@ -170,6 +174,12 @@ try {
     conf = {};
 }
 
+try {
+    sdkbox_conf = JSON.parse(fs.readFileSync(project_root+'/.sdkbox_packages.json', 'utf8'));
+} catch (err) {
+    sdkbox_conf = {};
+}
+
 function saveConf() {
     var fname = path.join(project_root,'.sdkbar.json');
     fs.writeFileSync(fname, JSON.stringify(conf, null, 4));
@@ -209,6 +219,11 @@ function findCocosVersion() {
         debug('Cocos version:', m[1]);
         return m[1];
     } else {
+        m = data.match('return "([0-9\.]+)"');
+        if(m) {
+            debug('Cocos version:', m[1]);
+            return m[1];
+        }
         error('Cocos version not found');
         return null;
     }
@@ -570,7 +585,11 @@ function xcode_rm_lflags(flags, xcodeproj) {
 function list() {
     console.log('Installed plugins:');
     Object.keys(conf).forEach(function(val, index, array) {
-        console.log(val, conf[val].version);
+        console.log('%s\t%s\tfrom %s', val, conf[val].version, conf[val].origin);
+    });
+    console.log('\nSDKBOX installed plugins:');
+    Object.keys(sdkbox_conf).forEach(function(val, index, array) {
+        console.log('%s\t%s', sdkbox_conf[val].name, (sdkbox_conf[val].version.join('.')));
     });
     console.log('');
 }
@@ -733,7 +752,7 @@ function Functioner(plugin_path, cocos_version) {
         },
         android_copy_libs: function(libs) {
             var orig = path.join(plugin_path, 'android', 'jni');
-            var dest = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/jni');
+            var dest = path.join(project_root, android_studio_project_dir, 'app/jni');
             fn.copy_files(libs, orig, dest);
         },
         android_add_sources: function(files) {
@@ -741,11 +760,11 @@ function Functioner(plugin_path, cocos_version) {
             for(key in files) {
                 injection = injection + '../' + files[key] + ' \\\n';
             }
-            var fname = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk');
+            var fname = path.join(project_root, android_studio_project_dir, 'app/jni/Android.mk');
             var data = fs.readFileSync(fname).toString();
             data = data.replace('../../../Classes/AppDelegate.cpp \\\n', '../../../Classes/AppDelegate.cpp \\\n'+injection);
             fs.writeFileSync(fname, data);
-            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk', 'str': injection});
+            install_log('inject', {'file': android_studio_project_dir+'/app/jni/Android.mk', 'str': injection});
         },
         android_set_permissions: function(permissions, verbatim) {
             for(perm of permissions) {
@@ -758,7 +777,7 @@ function Functioner(plugin_path, cocos_version) {
             for(lib of libs) {
                 injection = injection + '\n' + lib + ' \\';
             }
-            var fname = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk');
+            var fname = path.join(project_root, android_studio_project_dir, 'app/jni/Android.mk');
             var data = fs.readFileSync(fname).toString();
             var anchor = data.match(/(LOCAL_WHOLE_STATIC_LIBRARIES[^\n]*)/);
             debug(anchor);
@@ -770,27 +789,27 @@ function Functioner(plugin_path, cocos_version) {
                 data = data + injection;
             }
             fs.writeFileSync(fname, data);
-            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk', 'str': injection});
+            install_log('inject', {'file': android_studio_project_dir+'/app/jni/Android.mk', 'str': injection});
         },
         android_add_calls: function(calls) {
             var injection = '\n';
             for(call of calls) {
                 injection = injection + '$(call '+call+')\n';
             }
-            var fname = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk');
+            var fname = path.join(project_root, android_studio_project_dir, 'app/jni/Android.mk');
             var data = fs.readFileSync(fname).toString();
             data = data+injection;
             fs.writeFileSync(fname, data);
-            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk', 'str': injection});
+            install_log('inject', {'file': android_studio_project_dir+'/app/jni/Android.mk', 'str': injection});
         },
         android_add_xml_item: function(obj) {
             var xpath = obj['path'],
                 tag = obj['tag'],
                 key = obj['key'],
                 xml = obj['xml'];
-            var file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/AndroidManifest.xml');
+            var file = path.join(project_root, android_studio_project_dir, 'app/AndroidManifest.xml');
             var child = xml_append(file, xpath, tag, 'android:name=\''+key+'\'', xml);
-            install_log('xml', {'file': 'frameworks/runtime-src/proj.android-studio/app/AndroidManifest.xml', 'parent': xpath, 'xpath': child});
+            install_log('xml', {'file': android_studio_project_dir+'/app/AndroidManifest.xml', 'parent': xpath, 'xpath': child});
         },
         android_set_app_platform: function(num) {
             warning('android_set_app_platform unimplemented yet!');
@@ -807,22 +826,22 @@ function Functioner(plugin_path, cocos_version) {
                 xml += 'android:'+key+'="'+attributes[key]+'" ';
             }
             xml += '/>';
-            var file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/AndroidManifest.xml');
+            var file = path.join(project_root, android_studio_project_dir, 'app/AndroidManifest.xml');
             var child = xml_append(file, parent, element, elKey, xml);
-            install_log('xml', {'file': 'frameworks/runtime-src/proj.android-studio/app/AndroidManifest.xml', 'parent': parent, 'xpath': child});
+            install_log('xml', {'file': android_studio_project_dir+'/app/AndroidManifest.xml', 'parent': parent, 'xpath': child});
         },
         android_set_target: function(target_sdk) {
             //warning('android_set_target not implemented yet!');
         },
         android_has_library_reference: function(libname) {
             //warning('android_has_library_reference not implemented yet!');
-            var file = path.join(project_root, 'frameworks/runtime-src/proj.android/project.properties');
+            var file = path.join(project_root, android_project_dir, 'project.properties');
             var content = fs.readFileSync(file).toString();
             return content.indexOf(libname) >= 0;
         },
         android_add_library_reference: function(libname) {
             //warning('android_add_library_reference not implemented yet!');
-            var file = path.join(project_root, 'frameworks/runtime-src/proj.android/project.properties');
+            var file = path.join(project_root, android_project_dir, 'project.properties');
             var content = fs.readFileSync(file).toString();
             var lines = content.split(/[\n\r]/);
             var number = 1;
@@ -835,17 +854,17 @@ function Functioner(plugin_path, cocos_version) {
             var injection = '\nandroid.library.reference.'+number+'='+libname.replace(path.join(project_root, 'frameworks'), '../..');
             content += injection;
             fs.writeFileSync(file, content);
-            install_log('inject', {'file': 'frameworks/runtime-src/proj.android/project.properties', 'str': injection});
+            install_log('inject', {'file': android_project_dir+'/project.properties', 'str': injection});
         },
         android_studio_add_module: function(modname, libname) {
             //warning('android_studio_add_module not implemented yet!');
-            var settings_file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/settings.gradle');
+            var settings_file = path.join(project_root, android_studio_project_dir, 'settings.gradle');
             var projpath = libname.replace(path.join(project_root, 'frameworks'), '../..');
             var injection = `\ninclude ':${modname}'\nproject(':${modname}').projectDir = new File(settingsDir, '${projpath}')\n`;
             var data = fs.readFileSync(settings_file).toString();
             data += injection;
             fs.writeFileSync(settings_file, data);
-            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/settings.gradle', 'str': injection});
+            install_log('inject', {'file': android_studio_project_dir+'/settings.gradle', 'str': injection});
         },
         android_satisfies_sdk_version: function(ver) {
             //warning('android_satisfies_sdk_version not implemented yet!');
@@ -866,6 +885,14 @@ function Functioner(plugin_path, cocos_version) {
                     debug('Satisfies', arg, cocos_version);
                     return true;
                 }
+            }
+            return false;
+        },
+        satisfies_version: function(ver, obj) {
+            var comp = compareVersions(ver, obj.version)
+            if(comp == 0 || comp == 1) {
+                debug('Satisfies', ver, obj);
+                return true;
             }
             return false;
         },
@@ -910,33 +937,20 @@ function Functioner(plugin_path, cocos_version) {
             install_log('inject', {'file': 'frameworks/runtime-src/Classes/AppDelegate.cpp', 're': '\n\\/\\/BEGIN_'+marker+'[\\s\\S]*?\\/\\/END_'+marker+'\n'});
         },
         gradleProject: function(projname, projpath) {
-            var settings_file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/settings.gradle');
+            var settings_file = path.join(project_root, android_studio_project_dir, 'settings.gradle');
             var injection = `\ninclude ':${projname}'\nproject(':${projname}').projectDir = new File(settingsDir, '${projpath}')\n`;
             var data = fs.readFileSync(settings_file).toString();
             data += injection;
             fs.writeFileSync(settings_file, data);
-            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/settings.gradle', 'str': injection});
+            install_log('inject', {'file': android_studio_project_dir+'/settings.gradle', 'str': injection});
             
-            var build_file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/build.gradle');
+            var build_file = path.join(project_root, android_studio_project_dir, 'app/build.gradle');
             data = fs.readFileSync(build_file).toString();
             var injection2 = `    compile project(':${projname}')\n`;
             data = data.replace('dependencies {\n', 'dependencies {\n'+injection2);
             fs.writeFileSync(build_file, data);
-            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/app/build.gradle', 'str': injection2});
+            install_log('inject', {'file': android_studio_project_dir+'/app/build.gradle', 'str': injection2});
         },
-        /*
-        androidJni: function(files) {
-            var injection = '';
-            for(key in files) {
-                injection = injection + files[key] + ' \\\n';
-            }
-            var fname = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk');
-            var data = fs.readFileSync(fname).toString();
-            data = data.replace('../../../Classes/AppDelegate.cpp \\\n', '../../../Classes/AppDelegate.cpp \\\n'+injection);
-            fs.writeFileSync(fname, data);
-            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk', 'str': injection});
-        },
-        */
         add_xml_item: function(file, obj) {
             var xpath = obj['path'],
                 tag = obj['tag'],
@@ -985,18 +999,20 @@ function script_install(plugin_path, plugin, origin, script) {
         'False': false,
         'COCOS_PROJECT_TYPE': 'js',
         'COCOS_2DX_VERSION': cocos_version,
+        'COCOS_ENGINE_MAKER': 'cocos2d-x',
+        'CCC_ENGINE_VERSION': cocos_version,
         'SDKBOX_PACKAGE_NAME': plugin.name,
         'PLUGIN_PATH': plugin_path,
         'COCOS_RESOURCES_DIR': project_root+'/res/',
         'COCOS_CLASSES_DIR': project_root+'/frameworks/runtime-src/Classes/',
         'ANDROID_ACTIVITY_NAME': 'AppActivity',
         'ANDROID_MK_USES_WILDCARDS': false,
-        'ANDROID_ACTIVITY_PATH'     : project_root+'/frameworks/runtime-src/proj.android-studio/app/src/org/cocos2dx/javascript/',
+        'ANDROID_ACTIVITY_PATH'     : project_root+'/'+android_studio_project_dir+'/app/src/org/cocos2dx/javascript/',
         'ANDROID_COCOS_SRC_DIR'     : project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/src/org/cocos2dx/lib/',
         'ANDROID_LIBS_DIR'          : project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/libs/',
         'ANDROID_COCOS_PACKAGE_ROOT': project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/',
-        'ANDROID_STUDIO_PROJECT_DIR': project_root+'/frameworks/runtime-src/proj.android-studio/',
-        'ANDROID_PROJECT_DIR'       : project_root+'/frameworks/runtime-src/proj.android/',
+        'ANDROID_STUDIO_PROJECT_DIR': project_root+'/'+android_studio_project_dir+'/',
+        'ANDROID_PROJECT_DIR'       : project_root+'/'+android_project_dir+'/',
         'IOS_PROJECT_DIR'           : project_root+'/frameworks/runtime-src/proj.ios_mac/',
         'XCODE_PROJECT_DIR': prjs[0],
         'XCODE_PROJECT': xcode_project_file,
@@ -1289,6 +1305,19 @@ function get_remote_plugin(uri, callback) {
     }
 }
 
+function get_plugin_version(pname) {
+    var prev = conf[pname];
+    var prev_sdkbox = sdkbox_conf[pname];
+    var prev_ver = null;
+    if(typeof prev != 'undefined' && prev != null) {
+        prev_ver = prev.version;
+    }
+    if(typeof prev_sdkbox != 'undefined' && prev_sdkbox != null) {
+        prev_ver = prev_sdkbox.version.join('.');
+    }
+    return prev_ver;
+}
+
 function install_remote(url, origin, deps, callback ) {
     if(/^http/.test(url)) {
         // remote install
@@ -1317,60 +1346,79 @@ function install_remote(url, origin, deps, callback ) {
 function install_sdkbox(pname, origin, callback) {
     sync(function() {
         var prev = conf[pname];
+        var prev_sdkbox = sdkbox_conf[pname];
         var manifestContent = sdkbox_manifest.sync(null);
         var packs = manifestContent['packages'];
         var p = packs[pname];
+        var prev_ver = get_plugin_version(pname);
 
         if(typeof p === 'undefined' || p === null) {
-            if(typeof prev != 'undefined' && prev != null) {
+            if(prev_ver != null) {
+                // not found plugin in manifest but plugin already installed from unknown source
+                warning('Plugin', pname, prev_ver, 'already installed');
+                callback && callback(null, true);
+            } else {
                 error('Plugin', pname, 'not found');
                 if(!skip_deps_errors)
                     process.exit(1);
                 else {
                     callback && callback('Plugin not found');
                 }
-            } else {
-                // not found plugin in manifest but plugin already installed from unknown source
-                warning('Plugin', pname, 'already installed');
-                callback && callback(null, true);
             }
             return;
         }
 
-        var fname = null;
+        debug('Check conflicts for', pname);
         var conflicts = p['conflict'];
         if(typeof conflicts !== 'undefined' && conflicts != null) {
             for(cn of conflicts) {
                 var pn = conf[cn];
+                var pnsb = sdkbox_conf[cn];
                 if(typeof pn != null && pn != null) {
                     error(pname, 'conflicts with', cn);
                     error(pn.name, 'installed version:', pn.version);
                     if(!skip_deps_errors)
                         process.exit(1);
+                } else if(typeof pnsb != null && pn != null) {
+                    error(pname, 'conflicts with', cn);
+                    error(pnsb.name, 'installed version:', pnsb.version.join('.'));
+                    if(!skip_deps_errors)
+                        process.exit(1);
                 }
             }
         }
+        debug('Check dependencies for', pname);
         var deps = p['dependence'];
         if(typeof deps !== 'undefined' && deps != null) {
             for(dp of deps) {
-                install_sdkbox.sync(null, dp, dp);
+                var dp_ver = get_plugin_version(dp);
+                if(dp_ver == null) {
+                    install_sdkbox.sync(null, dp, dp);
+                } else {
+                    debug('Do not upgrade dependency plugin', dp, 'with version', dp_ver);
+                }
             }
         }
+        var fname = null;
+        var new_ver = null;
+        debug('Find the source of', pname);
         for(var v in p['versions']) {
-            if(typeof prev != 'undefined' && prev != null && compareVersions(prev.version, v) <= 0) {
+            if(prev_ver != null && compareVersions(prev_ver, v) <= 0) {
                 // skip lower version
                 continue;
             }
             var vd = p['versions'][v];
             if(vd && vd['v3']) {
                 fname = 'http://download.sdkbox.com/installer/v1/' + vd['v3']['bundle'];
+                new_ver = v;
             }
         }
         if(fname) {
+            if(prev_ver != null) debug('Upgrade plugin from', prev_ver, 'to', new_ver);
             install_remote.sync(null, fname, pname, deps);
             callback && callback(null, true);
         } else {
-            if(typeof prev != 'undefined' && prev != null) {
+            if(typeof prev_ver != null) {
                 warning('Plugin', pname, 'already installed');
                 callback && callback(null, true);
             } else {
