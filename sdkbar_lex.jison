@@ -4,7 +4,7 @@
 
 %%
 
-\#[^\n]*                /* return 'COMMENT'; */
+[\s]*\#[^\n]*           /* return 'COMMENT'; */
 "{"                     { this.begin('noindendation'); return '{'; }
 "["                     { this.begin('noindendation'); return '['; }
 <noindendation>[\s\n]+  /* skip space in object declaration */
@@ -68,6 +68,7 @@
 "and"                   return 'AND'
 "or"                    return 'OR'
 "not"                   return 'NOT'
+"in"                    return 'IN'
 "="                     return '='
 "("                     return '('
 ")"                     return ')'

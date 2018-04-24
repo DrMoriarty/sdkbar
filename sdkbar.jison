@@ -85,6 +85,8 @@ expression
     | object
     | NOT expression
     { $$ = ['NOT', $2]; }
+    | operand IN operand
+    { $$ = ['IN', $1, $3]; }
     | expression AND expression
     { $$ = ['AND', $1, $3]; }
     | expression OR expression

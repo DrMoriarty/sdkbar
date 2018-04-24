@@ -593,7 +593,7 @@ function xcode_add_lflags(flags, xcodeproj) {
 function xcode_rm_lflags(flags, xcodeproj) {
     myProj = xcode.project(xcodeproj);
     myProj.parseSync();
-    for(var flag in flags) {
+    for(var flag of flags) {
         try {
             myProj.removeFromOtherLinkerFlags(flag);
         } catch (err) {
@@ -1059,6 +1059,7 @@ function script_install(plugin_path, plugin, origin, script) {
         'ANDROID_ACTIVITY_NAME': 'AppActivity',
         'ANDROID_MK_USES_WILDCARDS': false,
         'ANDROID_ACTIVITY_PATH'     : project_root+'/'+android_studio_project_dir+'/app/src/org/cocos2dx/javascript/',
+        'ANDROID_STUDIO_ACTIVITY_PATH': project_root+'/'+android_studio_project_dir+'/app/src/org/cocos2dx/javascript/',
         'ANDROID_COCOS_SRC_DIR'     : project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/src/org/cocos2dx/lib/',
         'ANDROID_LIBS_DIR'          : project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/libs/',
         'ANDROID_COCOS_PACKAGE_ROOT': project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/',
