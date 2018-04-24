@@ -277,7 +277,7 @@ function copyFileSync( source, target ) {
             targetFile = targetFile.substring(separator.length);
         }
     }
-    return targetFile;
+    return [targetFile];
 }
 
 function copySymLinkSync(source, target) {
@@ -287,7 +287,30 @@ function copySymLinkSync(source, target) {
     }
     if(fs.existsSync(target)) {
         warning('File exist', target);
-        fs.unlinkSync(target);
+        var stats = fs.lstatSync(target);
+        if (stats.isDirectory()) {
+            // we can not just unlink the directory
+            // so copy the files inside it
+            debug('Copy symlinked dir', source, 'to dir', target);
+            var files = fs.readdirSync(source);
+            var result = [];
+            for(file of files) {
+                var ss = path.join(source,file)
+                var stats = fs.lstatSync(ss);
+                if (stats.isDirectory()) {
+                    result = result.concat(copyPathSync(ss, target));
+                } else if(stats.isSymbolicLink()) {
+                    result = result.concat(copySymLinkSync(ss, target));
+                } else if(stats.isFile()) {
+                    result = result.concat(copyFileSync(ss, target));
+                }
+            }
+            return result;
+        } else if(stats.isSymbolicLink()) {
+            fs.unlinkSync(target);
+        } else if(stats.isFile()) {
+            fs.unlinkSync(target);
+        }
     }
     debug('Copy symlink', source, target);
     fs.symlinkSync(link, target);
@@ -298,13 +321,13 @@ function copySymLinkSync(source, target) {
             target = target.substring(separator.length);
         }
     }
-    return target;
+    return [target];
 }
 
 function copyPathSync(source, target) {
     var result = []
     if ( !fs.lstatSync( source ).isDirectory() ) {
-        result.push(copyFileSync(source, target));
+        result = result.concat(copyFileSync(source, target));
     } else {
         target = path.join(target, path.basename(source));
         debug('Copy dir', source, target);
@@ -316,9 +339,9 @@ function copyPathSync(source, target) {
             if (stats.isDirectory()) {
                 result = result.concat(copyPathSync(ss, target));
             } else if(stats.isSymbolicLink()) {
-                result.push(copySymLinkSync(ss, target));
+                result = result.concat(copySymLinkSync(ss, target));
             } else if(stats.isFile()) {
-                result.push(copyFileSync(ss, target));
+                result = result.concat(copyFileSync(ss, target));
             }
         }
     }
@@ -571,7 +594,12 @@ function xcode_rm_lflags(flags, xcodeproj) {
     myProj = xcode.project(xcodeproj);
     myProj.parseSync();
     for(var flag in flags) {
-        myProj.removeFromOtherLinkerFlags(flag);
+        try {
+            myProj.removeFromOtherLinkerFlags(flag);
+        } catch (err) {
+            error('Xcode rm lflags failed:', flag);
+            error(err);
+        }
     }
     fs.writeFileSync(xcodeproj, myProj.writeSync());
 }
@@ -688,9 +716,12 @@ function info(pname) {
 
 function Functioner(plugin_path, cocos_version) {
     var fn = {
+        /************** SDKBOX variables **************/
+        PROJ_ANDROID_STUDIO: 'android-studio',
+        plugin_defines: {},
+        
         /************** SDKBOX methods **************/
         config_merge: function(orig, dest) {
-            //warning('Warning: config_merge is unimplemented yet!');
             if(fs.existsSync(dest)) {
                 var origJson = JSON.parse(fs.readFileSync(orig));
                 var destJson = JSON.parse(fs.readFileSync(dest));
@@ -716,7 +747,6 @@ function Functioner(plugin_path, cocos_version) {
             }
         },
         apply_patch: function(dest, params) {
-            //warning('Warning: apply_patch is unimplemented yet!', arguments);
             var src = findPatch(plugin_path, path.basename(dest), 'js', cocos_version);
             if(src == null) {
                 error('Patch not found', dest);
@@ -724,9 +754,15 @@ function Functioner(plugin_path, cocos_version) {
             } else {
                 debug('Applying patch', src);
                 var patchContent = fs.readFileSync(src).toString();
+                for(var key in fn.plugin_defines) {
+                    var re = '\\$\\('+key+'\\)';
+                    var value = fn.plugin_defines[key];
+                    debug('Fix patch: replace', re, 'with', value);
+                    patchContent = patchContent.replace(new RegExp(re, 'g'), value);
+                }
                 var structPatch = diff.parsePatch(patchContent);
                 var fileContent = fs.readFileSync(dest).toString();
-                fileContent = diff.applyPatch(fileContent, structPatch);
+                fileContent = diff.applyPatch(fileContent, structPatch, {fuzzFactor: 5});
                 if(fileContent === false) {
                     error('Can not apply patch to', dest);
                 } else {
@@ -876,7 +912,6 @@ function Functioner(plugin_path, cocos_version) {
             
         },
         satisfies_cocos_version: function() {
-            //warning('Warning: satisfies_cocos_version unimplemented yet!');
             for(var key in arguments) {
                 var arg = arguments[key];
                 var comp = compareVersions(arg, cocos_version)
@@ -897,8 +932,8 @@ function Functioner(plugin_path, cocos_version) {
             return false;
         },
         define: function(key, value) {
-            warning('Warning: define unimplemented yet!');
-            
+            //warning('define unimplemented yet!');
+            fn.plugin_defines[key] = value;
         },
         open_documentation: function(url, param) {
             log('Plugin documentation:', url);
@@ -908,6 +943,12 @@ function Functioner(plugin_path, cocos_version) {
         },
         add_manual_step: function(text) {
             log(text);
+        },
+        supports: function(feature) {
+            if(feature == 'android-studio')
+                return true;
+            else
+                return false;
         },
         
         /************** SdkBar methods **************/
@@ -971,6 +1012,16 @@ function Functioner(plugin_path, cocos_version) {
     return fn;
 }
 
+var Modules = {
+    os: {
+        path: {
+            join: path.join,
+            exists: fs.existsSync
+        },
+        remove: fs.unlinkSync
+    }
+};
+
 function script_install(plugin_path, plugin, origin, script) {
     var prev = conf[plugin.name];
     if(typeof prev != 'undefined' && prev != null) {
@@ -1013,6 +1064,7 @@ function script_install(plugin_path, plugin, origin, script) {
         'ANDROID_COCOS_PACKAGE_ROOT': project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/',
         'ANDROID_STUDIO_PROJECT_DIR': project_root+'/'+android_studio_project_dir+'/',
         'ANDROID_PROJECT_DIR'       : project_root+'/'+android_project_dir+'/',
+        'ANDROID_STUDIO_LIBS_DIR'   : project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/libs/',
         'IOS_PROJECT_DIR'           : project_root+'/frameworks/runtime-src/proj.ios_mac/',
         'XCODE_PROJECT_DIR': prjs[0],
         'XCODE_PROJECT': xcode_project_file,
@@ -1054,6 +1106,9 @@ function script_install(plugin_path, plugin, origin, script) {
             arg2 = this.do_command(arg2);
             return arg1 !== arg2;
         },
+        'IN': function(arg1, arg2) {
+            return arg2.indexOf(arg1) >= 0;
+        },
         'ADD': function(arg1, arg2) {
             arg1 = this.do_command(arg1);
             arg2 = this.do_command(arg2);
@@ -1092,6 +1147,14 @@ function script_install(plugin_path, plugin, origin, script) {
             }
             error('Invalid index', ind, 'for', ar);
             process.exit(1);
+        },
+        'IMPORT': function(module) {
+            var m = Modules[module];
+            if(typeof m == 'undefined' || m == null) {
+                warning('Module', module, 'not found!');
+            } else {
+                default_scope[module] = m;
+            }
         },
         'variable': function(arg1) {
             arg1 = this.do_command(arg1);
@@ -1559,9 +1622,9 @@ function remove(name) {
                             if(fs.lstatSync(arg).isSymbolicLink())
                                 fs.unlinkSync(arg);
                             else
-                                warning('Warning: file not found', arg);
+                                warning('file not found', arg);
                         } catch (e) {
-                            warning('Warning: file not found', arg);
+                            warning('file not found', arg);
                         }
                     }
                     removeEmptyDirs(path.dirname(arg));

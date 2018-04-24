@@ -140,15 +140,29 @@ if_statement
     { $$ = ['IF', $expression, $4, $6]; }
     ;
 
+inline_if_statement
+    : IF expression ':' function_call
+    { $$ = ['IF', $expression, [$4]]; }
+    | IF expression ':' assignment
+    { $$ = ['IF', $expression, [$4]]; }
+    ;
+
 assignment
     : TOKEN '=' expression
     { $$ = ['ASSIGN', $1, $3]; }
     ;
 
+import
+    : IMPORT TOKEN
+    { $$ = ['IMPORT', $2]; }
+    ;
+
 line
     : if_statement
+    | inline_if_statement
     | assignment
     | function_call
+    | import
     | string
     ;
 

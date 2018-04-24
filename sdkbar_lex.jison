@@ -78,6 +78,7 @@
 "else:"                 return 'ELSE'
 "True"                  return 'TRUE'
 "False"                 return 'FALSE'
+"import"                return 'IMPORT'
 [a-zA-Z_][a-zA-Z_0-9]*  return 'TOKEN'
 /* .                       return 'INVALID' */
 
