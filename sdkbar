@@ -881,7 +881,7 @@ function Functioner(plugin_path, cocos_version) {
             var content = fs.readFileSync(file).toString();
             var lines = content.split(/[\n\r]/);
             var number = 1;
-            for(line in lines) {
+            for(line of lines) {
                 var match = line.match(/android\.library\.reference\.([\d]+)/);
                 if(match != null) {
                     number = parseInt(match[1])+1;
@@ -976,6 +976,17 @@ function Functioner(plugin_path, cocos_version) {
             }
             fs.writeFileSync(fname, data);
             install_log('inject', {'file': 'frameworks/runtime-src/Classes/AppDelegate.cpp', 're': '\n\\/\\/BEGIN_'+marker+'[\\s\\S]*?\\/\\/END_'+marker+'\n'});
+        },
+        gradle_dependencies: function(dependencies) {
+            var injection = '';
+            for(var dependency of dependencies) {
+                injection += '    '+dependency+'\n';
+            }
+            var build_file = path.join(project_root, android_studio_project_dir, 'app/build.gradle');
+            data = fs.readFileSync(build_file).toString();
+            data = data.replace('dependencies {\n', 'dependencies {\n'+injection);
+            fs.writeFileSync(build_file, data);
+            install_log('inject', {'file': android_studio_project_dir+'/app/build.gradle', 'str': injection});
         },
         gradleProject: function(projname, projpath) {
             var settings_file = path.join(project_root, android_studio_project_dir, 'settings.gradle');
