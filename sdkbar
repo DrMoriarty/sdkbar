@@ -509,7 +509,8 @@ function xml_remove(fname, parent, xpath) {
  *
  *******************/
 
-function xcode_add(sources, frameworks, xcodeproj) {
+function xcode_add(sources, frameworks, xcodeproj, opt) {
+    var opt = opt || {};
     myProj = xcode.project(xcodeproj);
     myProj.parseSync();
     debug('Open xcode project', xcodeproj);
@@ -526,16 +527,16 @@ function xcode_add(sources, frameworks, xcodeproj) {
             break;
         }
     }
+    if(targetId != null) opt.target = targetId;
     //myProj.addHeaderFile('foo.h');
     for(var key in sources) {
         var src = sources[key];
         debug('Add xcode source file', src);
-        myProj.addSourceFile(src, {target: targetId}, pluginsGroup);
+        myProj.addSourceFile(src, opt, pluginsGroup);
     }
     var projdir = project_root+'/frameworks/runtime-src/proj.ios_mac/';
     for(var key in frameworks) {
         var frmw = frameworks[key];
-        var opt = {target: targetId};
         if(fs.existsSync(path.join(projdir, frmw))) {
             //frmw = path.join(projdir, frmw);
             opt.customFramework = true;
@@ -771,10 +772,10 @@ function Functioner(plugin_path, cocos_version) {
             }
         },
         xcode_add_frameworks: function(frameworks) {
-            xcode_add({}, frameworks, xcode_project_file);
+            xcode_add({}, frameworks, xcode_project_file, {});
         },
         xcode_add_sources: function(sources) {
-            xcode_add(sources, {}, xcode_project_file);
+            xcode_add(sources, {}, xcode_project_file, {});
         },
         xcode_add_linker_flags: function(flags) {
             xcode_add_lflags(flags, xcode_project_file);
@@ -1018,6 +1019,12 @@ function Functioner(plugin_path, cocos_version) {
                 }
             }
             install_log('xml', {'file': file, 'parent': xpath, 'xpath': child});
+        },
+        xcode_add_frameworks_with_opts: function(frameworks, opts) {
+            xcode_add({}, frameworks, xcode_project_file, opts);
+        },
+        xcode_add_sources_with_opts: function(sources, opts) {
+            xcode_add(sources, {}, xcode_project_file, opts);
         },
     };
     return fn;
