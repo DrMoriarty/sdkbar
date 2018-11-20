@@ -69,6 +69,7 @@
 "or"                    return 'OR'
 "not"                   return 'NOT'
 "in"                    return 'IN'
+"for"                   return 'FOR'
 "="                     return '='
 "("                     return '('
 ")"                     return ')'
@@ -76,10 +77,12 @@
 ","                     return 'COMMA'
 ":"                     return ':'
 "if"                    return 'IF'
+"elif"                  return 'ELIF'
 "else:"                 return 'ELSE'
 "True"                  return 'TRUE'
 "False"                 return 'FALSE'
 "import"                return 'IMPORT'
+"def"                   return 'DEF'
 [a-zA-Z_][a-zA-Z_0-9]*  return 'TOKEN'
 /* .                       return 'INVALID' */
 

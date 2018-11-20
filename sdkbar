@@ -18,6 +18,18 @@ const targz = require('targz');
 const deepmerge = require('deepmerge');
 const diff = require('diff');
 
+if (!String.prototype.startsWith) {
+  Object.defineProperty(String.prototype, 'startsWith', {
+    enumerable: false,
+    configurable: false,
+    writable: false,
+    value: function(searchString, position) {
+      position = position || 0;
+      return this.indexOf(searchString, position) === position;
+    }
+  });
+}
+
 if (!String.prototype.startswith) {
   Object.defineProperty(String.prototype, 'startswith', {
     enumerable: false,
@@ -26,6 +38,28 @@ if (!String.prototype.startswith) {
     value: function(searchString, position) {
       position = position || 0;
       return this.indexOf(searchString, position) === position;
+    }
+  });
+}
+
+if (!String.prototype.endsWith) {
+  Object.defineProperty(String.prototype, 'endsWith', {
+    enumerable: false,
+    configurable: false,
+    writable: false,
+    value: function(searchString) {
+      return this.indexOf(searchString, this.length - searchString.length) !== -1;
+    }
+  });
+}
+
+if (!String.prototype.endswith) {
+  Object.defineProperty(String.prototype, 'endswith', {
+    enumerable: false,
+    configurable: false,
+    writable: false,
+    value: function(searchString) {
+      return this.indexOf(searchString, this.length - searchString.length) !== -1;
     }
   });
 }
@@ -104,6 +138,17 @@ function error() {
     console.error.apply(console, args);
 }
 
+function fatal() {
+    var args = [FgRed+'Fatal:'];
+    for(key in arguments) {
+        args.push(arguments[key]);
+    }
+    args.push(Reset);
+    console.error.apply(console, args);
+    console.trace();
+    process.exit(1);
+}
+
 /*******************
  *
  *  Config & Project 
@@ -120,7 +165,7 @@ var xcode_project_file = null;
 var clean_temp = true;
 var skip_deps_errors = false
 
-const android_project_dir = 'frameworks/runtime-src/proj.android-old';
+const android_project_dir = 'frameworks/runtime-src/proj.android/app';
 const android_studio_project_dir = 'frameworks/runtime-src/proj.android';
 
 function install_log(operation, arg) {
@@ -382,6 +427,8 @@ function findPatch(plugin_path, basename, projectType, cocos_version) {
     var src = path.join(plugin_path, basename+'.'+projectType+'.'+cocos_version+'.patch');
     if(fs.existsSync(src)) return src;
     src = path.join(plugin_path, basename+'.'+cocos_version+'.patch');
+    if(fs.existsSync(src)) return src;
+    src = path.join(plugin_path, basename);
     if(fs.existsSync(src)) return src;
     // try to find the previous version patch
     src = null;
@@ -710,8 +757,7 @@ function info(pname) {
                 return true;
             }
         }
-        error('Plugin', pname, 'not found');
-        process.exit(1);
+        fatal('Plugin', pname, 'not found');
     });
 }
 
@@ -720,6 +766,7 @@ function Functioner(plugin_path, cocos_version) {
         /************** SDKBOX variables **************/
         PROJ_ANDROID_STUDIO: 'android-studio',
         plugin_defines: {},
+        PROPERTIES: [],
         
         /************** SDKBOX methods **************/
         config_merge: function(orig, dest) {
@@ -748,10 +795,13 @@ function Functioner(plugin_path, cocos_version) {
             }
         },
         apply_patch: function(dest, params) {
-            var src = findPatch(plugin_path, path.basename(dest), 'js', cocos_version);
+            params = params || {};
+            var patchFile = path.basename(dest);
+            if(params['patch'])
+                patchFile = params['patch']
+            var src = findPatch(plugin_path, patchFile, 'js', cocos_version);
             if(src == null) {
-                error('Patch not found', dest);
-                process.exit(1);
+                fatal('Patch not found', patchFile, 'for', dest);
             } else {
                 debug('Applying patch', src);
                 var patchContent = fs.readFileSync(src).toString();
@@ -770,6 +820,9 @@ function Functioner(plugin_path, cocos_version) {
                     fs.writeFileSync(dest, fileContent);
                 }
             }
+        },
+        isJSB2: function() {
+            return false;
         },
         xcode_add_frameworks: function(frameworks) {
             xcode_add({}, frameworks, xcode_project_file, {});
@@ -803,10 +856,21 @@ function Functioner(plugin_path, cocos_version) {
             fs.writeFileSync(fname, data);
             install_log('inject', {'file': android_studio_project_dir+'/app/jni/Android.mk', 'str': injection});
         },
-        android_set_permissions: function(permissions, verbatim) {
-            for(perm of permissions) {
-                if(perm.indexOf('.') < 0) perm = 'android.permission.'+perm;
-                fn.android_add_xml_item({path: '.', tag: 'uses-permission', key:perm, xml:'<uses-permission android:name="'+perm+'"/>'});
+        android_set_permission: function(perm, verbatim) {
+            if(perm.indexOf('.') < 0) perm = 'android.permission.'+perm;
+            fn.android_add_xml_item({path: '.', tag: 'uses-permission', key:perm, xml:'<uses-permission android:name="'+perm+'"/>'});
+        },
+        android_set_permissions: function(param, verbatim) {
+            if(param instanceof Array) {
+                for(perm of param) {
+                    if(perm.indexOf('.') < 0) perm = 'android.permission.'+perm;
+                    fn.android_add_xml_item({path: '.', tag: 'uses-permission', key:perm, xml:'<uses-permission android:name="'+perm+'"/>'});
+                }
+            } else if(typeof param === 'string') {
+                if(param.indexOf('.') < 0) param = 'android.permission.'+param;
+                fn.android_add_xml_item({path: '.', tag: 'uses-permission', key:param, xml:'<uses-permission android:name="'+param+'"/>'});
+            } else {
+                fatal('Invalid type of', param);
             }
         },
         android_add_static_libraries: function(libs) {
@@ -911,6 +975,12 @@ function Functioner(plugin_path, cocos_version) {
         },
         android_add_activity: function(activity, attributes) {
             
+        },
+        android_set_key_value: function(target, key, value) {
+            warning('android_set_key_value not implemented yet!');
+        },
+        only_android_studio: function() {
+            return false;
         },
         satisfies_cocos_version: function() {
             for(var key in arguments) {
@@ -1034,7 +1104,8 @@ var Modules = {
     os: {
         path: {
             join: path.join,
-            exists: fs.existsSync
+            exists: fs.existsSync,
+            dirname: path.dirname
         },
         remove: fs.unlinkSync
     }
@@ -1044,8 +1115,7 @@ function script_install(plugin_path, plugin, origin, script) {
     var prev = conf[plugin.name];
     if(typeof prev != 'undefined' && prev != null) {
         error('Plugin', plugin.name, 'already installed (version ', plugin.version+')');
-        error('Remove it first');
-        process.exit(1);
+        fatal('Remove it first');
     }
     conf[plugin.name] = {
         'name': plugin.name,
@@ -1084,6 +1154,7 @@ function script_install(plugin_path, plugin, origin, script) {
         'ANDROID_STUDIO_PROJECT_DIR': project_root+'/'+android_studio_project_dir+'/',
         'ANDROID_PROJECT_DIR'       : project_root+'/'+android_project_dir+'/',
         'ANDROID_STUDIO_LIBS_DIR'   : project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/libs/',
+        'ANDROID_PROPERTIES'        : path.join(project_root, android_studio_project_dir, 'app/project.properties'),
         'IOS_PROJECT_DIR'           : project_root+'/frameworks/runtime-src/proj.ios_mac/',
         'XCODE_PROJECT_DIR': prjs[0],
         'XCODE_PROJECT': xcode_project_file,
@@ -1164,8 +1235,7 @@ function script_install(plugin_path, plugin, origin, script) {
                     return ar2[ind];
                 }
             }
-            error('Invalid index', ind, 'for', ar);
-            process.exit(1);
+            fatal('Invalid index', ind, 'for', ar);
         },
         'IMPORT': function(module) {
             var m = Modules[module];
@@ -1175,13 +1245,77 @@ function script_install(plugin_path, plugin, origin, script) {
                 default_scope[module] = m;
             }
         },
+        // block for statement
+        'FOR': function(array, index_var, block) {
+            array = this.do_command(array);
+            if(array instanceof Array) {
+                for(val of array) {
+                    default_scope[index_var] = val;
+                    var body = block.slice(0);
+                    debug('Execute for body:', JSON.stringify(body));
+                    this.do_block(body);
+                }
+            } else {
+                fatal('Invalid iteration for array', array);
+            }
+        },
+        // inline for statement
+        'FORI': function(array, index_var, expr, cond) {
+            var result = [];
+            array = this.do_command(array);
+            if(array instanceof Array) {
+                for(key in array) {
+                    var val = array[key];
+                    default_scope[index_var] = val;
+                    var res = null;
+                    var expression = expr.slice(0);
+                    if(typeof cond == 'undefined' || cond == null) {
+                        // no condition
+                        res = this.do_command(expression);
+                    } else {
+                        // check condition
+                        var condition = cond.slice(0);
+                        var res = this.do_command(condition);
+                        if(res === true) {
+                            res = this.do_command(expression);
+                        }
+                    }
+                    if(res != null) {
+                        debug('iterate', res, 'from', val);
+                        result.push(res);
+                    }
+                }
+            } else {
+                fatal('Invalid iteration for array', array);
+            }
+            return result;
+        },
+        'DEF': function(name, arglist, block) {
+            default_scope[name] = function() {
+                // check arguments
+                if(arguments.length < arglist.length) {
+                    fatal('Insufficient arguments:', arguments, 'in definition', name);
+                }
+                // prepare arguments
+                for(var i=0; i<arglist.length; i++) {
+                    var var_name = arglist[i];
+                    var var_value = arguments[i];
+                    debug('Set variable', var_name, 'value', var_value);
+                    default_scope[var_name] = var_value;
+                }
+                // execution
+                var body = block.slice(0);
+                debug('Execute definition body', JSON.stringify(body));
+                var result = this.do_block(body);
+                return result;
+            };
+        },
         'variable': function(arg1) {
             arg1 = this.do_command(arg1);
             var value = this.resolve_name_in_scope(arg1, variables);
             if(value == null) {
                 error('Variable required:', arg1);
-                error('Use parameter: --variable '+arg1+'=VALUE');
-                process.exit(1);
+                fatal('Use parameter: --variable '+arg1+'=VALUE');
             }
             return value;
         }
@@ -1265,8 +1399,7 @@ function script_install(plugin_path, plugin, origin, script) {
         },
         do_block: function(block) {
             var result = null;
-            for(key in block) {
-                var command = block[key];
+            for(command of block) {
                 result = this.do_command(command);
             }
             return result;
@@ -1274,13 +1407,17 @@ function script_install(plugin_path, plugin, origin, script) {
         do_command: function(command) {
             if(command instanceof Array) {
                 // function with args
-                var cmd = command.shift();
+                var command_copy = command.slice(0);
+                var cmd = command_copy.shift();
+                if(typeof cmd !== 'string') {
+                    fatal('Unexpected command type', cmd);
+                }
                 if(cmd.startsWith('"') || cmd.startsWith("'")) {
                     // constant string detected, so process as a regular array
-                    command.unshift(cmd);
-                    return this.resolve_name(command);
+                    command_copy.unshift(cmd);
+                    return this.resolve_name(command_copy);
                 }
-                var args = command;
+                var args = command_copy;
                 var need_resolve = false;
                 var fn = this.resolve_name_in_scope(cmd, operators);
                 if(fn == null) {
@@ -1368,8 +1505,7 @@ function get_remote_plugin(uri, callback) {
                     else proc();
                 });
             } else {
-                error('Archive format not supported:', fname);
-                process.exit(1);
+                fatal('Archive format not supported:', fname);
             }
         }, function(err) {
             callback(err, null);
@@ -1415,8 +1551,7 @@ function install_remote(url, origin, deps, callback ) {
                 }
                 return true;
             } catch(err) {
-                error(err);
-                process.exit(1);
+                fatal(err);
             }
         }, callback);
     } else {
@@ -1440,10 +1575,10 @@ function install_sdkbox(pname, origin, callback) {
                 warning('Plugin', pname, prev_ver, 'already installed');
                 callback && callback(null, true);
             } else {
-                error('Plugin', pname, 'not found');
-                if(!skip_deps_errors)
-                    process.exit(1);
-                else {
+                if(!skip_deps_errors) {
+                    fatal('Plugin', pname, 'not found');
+                } else {
+                    error('Plugin', pname, 'not found');
                     callback && callback('Plugin not found');
                 }
             }
@@ -1573,8 +1708,7 @@ function install_local(installpath, origin, deps) {
             if(install_script != null)
                 script_install(installpath, {'name': plugin_name, 'version': plugin_version, 'deps': deps}, orgn, install_script);
             else {
-                error('Plugin format not supported');
-                process.exit(1);
+                fatal('Plugin format not supported');
             }
         }
     } catch (err) {
@@ -1584,15 +1718,13 @@ function install_local(installpath, origin, deps) {
             error(err);
         if(err["code"] === "ENOENT") {
             // no such file
-            error(err);
-            process.exit(1);
+            fatal(err);
         } else {
             if(typeof err['message'] !== 'undefined')
-                error(err['message'])
+                fatal(err['message'])
             else {
-                error(err);
+                fatal(err);
             }
-            process.exit(1);
         }
     }
     saveConf();
@@ -1601,8 +1733,7 @@ function install_local(installpath, origin, deps) {
 function remove(name) {
     var cc = conf[name];
     if(typeof cc == 'undefined' || cc == null) {
-        console.error('Plugin', name, 'not found!');
-        process.exit(1);
+        fatal('Plugin', name, 'not found!');
     }
     for(var pl in conf) {
         if(name === pl) continue;
@@ -1699,8 +1830,7 @@ function update(name) {
     var internal_update = function(pluginname) {
         var cc = conf[pluginname];
         if(typeof cc == 'undefined' || cc == null) {
-            console.error('Plugin', pluginname, 'not found!');
-            process.exit(1);
+            fatal('Plugin', pluginname, 'not found!');
         }
         var origin = cc.origin;
         variables = cc.variables || {};
@@ -1726,8 +1856,7 @@ function setVariable(arg) {
     if(ar.length == 2) {
         variables[ar[0]] = ar[1];
     } else {
-        error('Invalid variable:', arg);
-        process.exit(1);
+        fatal('Invalid variable:', arg);
     }
 }
 
