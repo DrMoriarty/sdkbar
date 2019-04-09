@@ -18,6 +18,18 @@ const targz = require('targz');
 const deepmerge = require('deepmerge');
 const diff = require('diff');
 
+if (!String.prototype.startsWith) {
+  Object.defineProperty(String.prototype, 'startsWith', {
+    enumerable: false,
+    configurable: false,
+    writable: false,
+    value: function(searchString, position) {
+      position = position || 0;
+      return this.indexOf(searchString, position) === position;
+    }
+  });
+}
+
 if (!String.prototype.startswith) {
   Object.defineProperty(String.prototype, 'startswith', {
     enumerable: false,
@@ -26,6 +38,28 @@ if (!String.prototype.startswith) {
     value: function(searchString, position) {
       position = position || 0;
       return this.indexOf(searchString, position) === position;
+    }
+  });
+}
+
+if (!String.prototype.endsWith) {
+  Object.defineProperty(String.prototype, 'endsWith', {
+    enumerable: false,
+    configurable: false,
+    writable: false,
+    value: function(searchString) {
+      return this.indexOf(searchString, this.length - searchString.length) !== -1;
+    }
+  });
+}
+
+if (!String.prototype.endswith) {
+  Object.defineProperty(String.prototype, 'endswith', {
+    enumerable: false,
+    configurable: false,
+    writable: false,
+    value: function(searchString) {
+      return this.indexOf(searchString, this.length - searchString.length) !== -1;
     }
   });
 }
@@ -104,6 +138,17 @@ function error() {
     console.error.apply(console, args);
 }
 
+function fatal() {
+    var args = [FgRed+'Fatal:'];
+    for(key in arguments) {
+        args.push(arguments[key]);
+    }
+    args.push(Reset);
+    console.error.apply(console, args);
+    console.trace();
+    process.exit(1);
+}
+
 /*******************
  *
  *  Config & Project 
@@ -112,12 +157,16 @@ function error() {
 
 var proj = null;
 var conf = null;
+var sdkbox_conf = null;
 var project_root = path.resolve("./");
 var install_log_list = [];
 var variables = {};
 var xcode_project_file = null;
 var clean_temp = true;
 var skip_deps_errors = false
+
+const android_project_dir = 'frameworks/runtime-src/proj.android/app';
+const android_studio_project_dir = 'frameworks/runtime-src/proj.android';
 
 function install_log(operation, arg) {
     install_log_list.push({'op': operation, 'arg': arg});
@@ -170,6 +219,12 @@ try {
     conf = {};
 }
 
+try {
+    sdkbox_conf = JSON.parse(fs.readFileSync(project_root+'/.sdkbox_packages.json', 'utf8'));
+} catch (err) {
+    sdkbox_conf = {};
+}
+
 function saveConf() {
     var fname = path.join(project_root,'.sdkbar.json');
     fs.writeFileSync(fname, JSON.stringify(conf, null, 4));
@@ -209,6 +264,11 @@ function findCocosVersion() {
         debug('Cocos version:', m[1]);
         return m[1];
     } else {
+        m = data.match('return "([0-9\.]+)"');
+        if(m) {
+            debug('Cocos version:', m[1]);
+            return m[1];
+        }
         error('Cocos version not found');
         return null;
     }
@@ -262,7 +322,7 @@ function copyFileSync( source, target ) {
             targetFile = targetFile.substring(separator.length);
         }
     }
-    return targetFile;
+    return [targetFile];
 }
 
 function copySymLinkSync(source, target) {
@@ -272,7 +332,30 @@ function copySymLinkSync(source, target) {
     }
     if(fs.existsSync(target)) {
         warning('File exist', target);
-        fs.unlinkSync(target);
+        var stats = fs.lstatSync(target);
+        if (stats.isDirectory()) {
+            // we can not just unlink the directory
+            // so copy the files inside it
+            debug('Copy symlinked dir', source, 'to dir', target);
+            var files = fs.readdirSync(source);
+            var result = [];
+            for(file of files) {
+                var ss = path.join(source,file)
+                var stats = fs.lstatSync(ss);
+                if (stats.isDirectory()) {
+                    result = result.concat(copyPathSync(ss, target));
+                } else if(stats.isSymbolicLink()) {
+                    result = result.concat(copySymLinkSync(ss, target));
+                } else if(stats.isFile()) {
+                    result = result.concat(copyFileSync(ss, target));
+                }
+            }
+            return result;
+        } else if(stats.isSymbolicLink()) {
+            fs.unlinkSync(target);
+        } else if(stats.isFile()) {
+            fs.unlinkSync(target);
+        }
     }
     debug('Copy symlink', source, target);
     fs.symlinkSync(link, target);
@@ -283,13 +366,13 @@ function copySymLinkSync(source, target) {
             target = target.substring(separator.length);
         }
     }
-    return target;
+    return [target];
 }
 
 function copyPathSync(source, target) {
     var result = []
     if ( !fs.lstatSync( source ).isDirectory() ) {
-        result.push(copyFileSync(source, target));
+        result = result.concat(copyFileSync(source, target));
     } else {
         target = path.join(target, path.basename(source));
         debug('Copy dir', source, target);
@@ -301,9 +384,9 @@ function copyPathSync(source, target) {
             if (stats.isDirectory()) {
                 result = result.concat(copyPathSync(ss, target));
             } else if(stats.isSymbolicLink()) {
-                result.push(copySymLinkSync(ss, target));
+                result = result.concat(copySymLinkSync(ss, target));
             } else if(stats.isFile()) {
-                result.push(copyFileSync(ss, target));
+                result = result.concat(copyFileSync(ss, target));
             }
         }
     }
@@ -344,6 +427,8 @@ function findPatch(plugin_path, basename, projectType, cocos_version) {
     var src = path.join(plugin_path, basename+'.'+projectType+'.'+cocos_version+'.patch');
     if(fs.existsSync(src)) return src;
     src = path.join(plugin_path, basename+'.'+cocos_version+'.patch');
+    if(fs.existsSync(src)) return src;
+    src = path.join(plugin_path, basename);
     if(fs.existsSync(src)) return src;
     // try to find the previous version patch
     src = null;
@@ -471,7 +556,8 @@ function xml_remove(fname, parent, xpath) {
  *
  *******************/
 
-function xcode_add(sources, frameworks, xcodeproj) {
+function xcode_add(sources, frameworks, xcodeproj, opt) {
+    var opt = opt || {};
     myProj = xcode.project(xcodeproj);
     myProj.parseSync();
     debug('Open xcode project', xcodeproj);
@@ -488,16 +574,16 @@ function xcode_add(sources, frameworks, xcodeproj) {
             break;
         }
     }
+    if(targetId != null) opt.target = targetId;
     //myProj.addHeaderFile('foo.h');
     for(var key in sources) {
         var src = sources[key];
         debug('Add xcode source file', src);
-        myProj.addSourceFile(src, {target: targetId}, pluginsGroup);
+        myProj.addSourceFile(src, opt, pluginsGroup);
     }
     var projdir = project_root+'/frameworks/runtime-src/proj.ios_mac/';
     for(var key in frameworks) {
         var frmw = frameworks[key];
-        var opt = {target: targetId};
         if(fs.existsSync(path.join(projdir, frmw))) {
             //frmw = path.join(projdir, frmw);
             opt.customFramework = true;
@@ -555,8 +641,13 @@ function xcode_add_lflags(flags, xcodeproj) {
 function xcode_rm_lflags(flags, xcodeproj) {
     myProj = xcode.project(xcodeproj);
     myProj.parseSync();
-    for(var flag in flags) {
-        myProj.removeFromOtherLinkerFlags(flag);
+    for(var flag of flags) {
+        try {
+            myProj.removeFromOtherLinkerFlags(flag);
+        } catch (err) {
+            error('Xcode rm lflags failed:', flag);
+            error(err);
+        }
     }
     fs.writeFileSync(xcodeproj, myProj.writeSync());
 }
@@ -570,7 +661,11 @@ function xcode_rm_lflags(flags, xcodeproj) {
 function list() {
     console.log('Installed plugins:');
     Object.keys(conf).forEach(function(val, index, array) {
-        console.log(val, conf[val].version);
+        console.log('%s\t%s\tfrom %s', val, conf[val].version, conf[val].origin);
+    });
+    console.log('\nSDKBOX installed plugins:');
+    Object.keys(sdkbox_conf).forEach(function(val, index, array) {
+        console.log('%s\t%s', sdkbox_conf[val].name, (sdkbox_conf[val].version.join('.')));
     });
     console.log('');
 }
@@ -662,16 +757,19 @@ function info(pname) {
                 return true;
             }
         }
-        error('Plugin', pname, 'not found');
-        process.exit(1);
+        fatal('Plugin', pname, 'not found');
     });
 }
 
 function Functioner(plugin_path, cocos_version) {
     var fn = {
+        /************** SDKBOX variables **************/
+        PROJ_ANDROID_STUDIO: 'android-studio',
+        plugin_defines: {},
+        PROPERTIES: [],
+        
         /************** SDKBOX methods **************/
         config_merge: function(orig, dest) {
-            //warning('Warning: config_merge is unimplemented yet!');
             if(fs.existsSync(dest)) {
                 var origJson = JSON.parse(fs.readFileSync(orig));
                 var destJson = JSON.parse(fs.readFileSync(dest));
@@ -697,17 +795,25 @@ function Functioner(plugin_path, cocos_version) {
             }
         },
         apply_patch: function(dest, params) {
-            //warning('Warning: apply_patch is unimplemented yet!', arguments);
-            var src = findPatch(plugin_path, path.basename(dest), 'js', cocos_version);
+            params = params || {};
+            var patchFile = path.basename(dest);
+            if(params['patch'])
+                patchFile = params['patch']
+            var src = findPatch(plugin_path, patchFile, 'js', cocos_version);
             if(src == null) {
-                error('Patch not found', dest);
-                process.exit(1);
+                fatal('Patch not found', patchFile, 'for', dest);
             } else {
                 debug('Applying patch', src);
                 var patchContent = fs.readFileSync(src).toString();
+                for(var key in fn.plugin_defines) {
+                    var re = '\\$\\('+key+'\\)';
+                    var value = fn.plugin_defines[key];
+                    debug('Fix patch: replace', re, 'with', value);
+                    patchContent = patchContent.replace(new RegExp(re, 'g'), value);
+                }
                 var structPatch = diff.parsePatch(patchContent);
                 var fileContent = fs.readFileSync(dest).toString();
-                fileContent = diff.applyPatch(fileContent, structPatch);
+                fileContent = diff.applyPatch(fileContent, structPatch, {fuzzFactor: 5});
                 if(fileContent === false) {
                     error('Can not apply patch to', dest);
                 } else {
@@ -715,11 +821,14 @@ function Functioner(plugin_path, cocos_version) {
                 }
             }
         },
+        isJSB2: function() {
+            return false;
+        },
         xcode_add_frameworks: function(frameworks) {
-            xcode_add({}, frameworks, xcode_project_file);
+            xcode_add({}, frameworks, xcode_project_file, {});
         },
         xcode_add_sources: function(sources) {
-            xcode_add(sources, {}, xcode_project_file);
+            xcode_add(sources, {}, xcode_project_file, {});
         },
         xcode_add_linker_flags: function(flags) {
             xcode_add_lflags(flags, xcode_project_file);
@@ -733,7 +842,7 @@ function Functioner(plugin_path, cocos_version) {
         },
         android_copy_libs: function(libs) {
             var orig = path.join(plugin_path, 'android', 'jni');
-            var dest = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/jni');
+            var dest = path.join(project_root, android_studio_project_dir, 'app/jni');
             fn.copy_files(libs, orig, dest);
         },
         android_add_sources: function(files) {
@@ -741,24 +850,35 @@ function Functioner(plugin_path, cocos_version) {
             for(key in files) {
                 injection = injection + '../' + files[key] + ' \\\n';
             }
-            var fname = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk');
+            var fname = path.join(project_root, android_studio_project_dir, 'app/jni/Android.mk');
             var data = fs.readFileSync(fname).toString();
             data = data.replace('../../../Classes/AppDelegate.cpp \\\n', '../../../Classes/AppDelegate.cpp \\\n'+injection);
             fs.writeFileSync(fname, data);
-            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk', 'str': injection});
+            install_log('inject', {'file': android_studio_project_dir+'/app/jni/Android.mk', 'str': injection});
         },
-        android_set_permissions: function(permissions, verbatim) {
-            for(perm of permissions) {
-                if(perm.indexOf('.') < 0) perm = 'android.permission.'+perm;
-                fn.android_add_xml_item({path: '.', tag: 'uses-permission', key:perm, xml:'<uses-permission android:name="'+perm+'"/>'});
+        android_set_permission: function(perm, verbatim) {
+            if(perm.indexOf('.') < 0) perm = 'android.permission.'+perm;
+            fn.android_add_xml_item({path: '.', tag: 'uses-permission', key:perm, xml:'<uses-permission android:name="'+perm+'"/>'});
+        },
+        android_set_permissions: function(param, verbatim) {
+            if(param instanceof Array) {
+                for(perm of param) {
+                    if(perm.indexOf('.') < 0) perm = 'android.permission.'+perm;
+                    fn.android_add_xml_item({path: '.', tag: 'uses-permission', key:perm, xml:'<uses-permission android:name="'+perm+'"/>'});
+                }
+            } else if(typeof param === 'string') {
+                if(param.indexOf('.') < 0) param = 'android.permission.'+param;
+                fn.android_add_xml_item({path: '.', tag: 'uses-permission', key:param, xml:'<uses-permission android:name="'+param+'"/>'});
+            } else {
+                fatal('Invalid type of', param);
             }
         },
         android_add_static_libraries: function(libs) {
             var injection = '';
             for(lib of libs) {
-                injection = injection + '\n' + lib + ' \\';
+                injection = injection + '\nLOCAL_WHOLE_STATIC_LIBRARIES += ' + lib;
             }
-            var fname = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk');
+            var fname = path.join(project_root, android_studio_project_dir, 'app/jni/Android.mk');
             var data = fs.readFileSync(fname).toString();
             var anchor = data.match(/(LOCAL_WHOLE_STATIC_LIBRARIES[^\n]*)/);
             debug(anchor);
@@ -766,31 +886,30 @@ function Functioner(plugin_path, cocos_version) {
                 anchor = anchor[1];
                 data = data.replace(anchor, anchor+injection);
             } else {
-                injection = 'LOCAL_WHOLE_STATIC_LIBRARIES = \\' + injection + '\n';
                 data = data + injection;
             }
             fs.writeFileSync(fname, data);
-            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk', 'str': injection});
+            install_log('inject', {'file': android_studio_project_dir+'/app/jni/Android.mk', 'str': injection});
         },
         android_add_calls: function(calls) {
             var injection = '\n';
             for(call of calls) {
                 injection = injection + '$(call '+call+')\n';
             }
-            var fname = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk');
+            var fname = path.join(project_root, android_studio_project_dir, 'app/jni/Android.mk');
             var data = fs.readFileSync(fname).toString();
             data = data+injection;
             fs.writeFileSync(fname, data);
-            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk', 'str': injection});
+            install_log('inject', {'file': android_studio_project_dir+'/app/jni/Android.mk', 'str': injection});
         },
         android_add_xml_item: function(obj) {
             var xpath = obj['path'],
                 tag = obj['tag'],
                 key = obj['key'],
                 xml = obj['xml'];
-            var file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/AndroidManifest.xml');
+            var file = path.join(project_root, android_studio_project_dir, 'app/AndroidManifest.xml');
             var child = xml_append(file, xpath, tag, 'android:name=\''+key+'\'', xml);
-            install_log('xml', {'file': 'frameworks/runtime-src/proj.android-studio/app/AndroidManifest.xml', 'parent': xpath, 'xpath': child});
+            install_log('xml', {'file': android_studio_project_dir+'/app/AndroidManifest.xml', 'parent': xpath, 'xpath': child});
         },
         android_set_app_platform: function(num) {
             warning('android_set_app_platform unimplemented yet!');
@@ -807,26 +926,26 @@ function Functioner(plugin_path, cocos_version) {
                 xml += 'android:'+key+'="'+attributes[key]+'" ';
             }
             xml += '/>';
-            var file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/AndroidManifest.xml');
+            var file = path.join(project_root, android_studio_project_dir, 'app/AndroidManifest.xml');
             var child = xml_append(file, parent, element, elKey, xml);
-            install_log('xml', {'file': 'frameworks/runtime-src/proj.android-studio/app/AndroidManifest.xml', 'parent': parent, 'xpath': child});
+            install_log('xml', {'file': android_studio_project_dir+'/app/AndroidManifest.xml', 'parent': parent, 'xpath': child});
         },
         android_set_target: function(target_sdk) {
             //warning('android_set_target not implemented yet!');
         },
         android_has_library_reference: function(libname) {
             //warning('android_has_library_reference not implemented yet!');
-            var file = path.join(project_root, 'frameworks/runtime-src/proj.android/project.properties');
+            var file = path.join(project_root, android_project_dir, 'project.properties');
             var content = fs.readFileSync(file).toString();
             return content.indexOf(libname) >= 0;
         },
         android_add_library_reference: function(libname) {
             //warning('android_add_library_reference not implemented yet!');
-            var file = path.join(project_root, 'frameworks/runtime-src/proj.android/project.properties');
+            var file = path.join(project_root, android_project_dir, 'project.properties');
             var content = fs.readFileSync(file).toString();
             var lines = content.split(/[\n\r]/);
             var number = 1;
-            for(line in lines) {
+            for(line of lines) {
                 var match = line.match(/android\.library\.reference\.([\d]+)/);
                 if(match != null) {
                     number = parseInt(match[1])+1;
@@ -835,17 +954,17 @@ function Functioner(plugin_path, cocos_version) {
             var injection = '\nandroid.library.reference.'+number+'='+libname.replace(path.join(project_root, 'frameworks'), '../..');
             content += injection;
             fs.writeFileSync(file, content);
-            install_log('inject', {'file': 'frameworks/runtime-src/proj.android/project.properties', 'str': injection});
+            install_log('inject', {'file': android_project_dir+'/project.properties', 'str': injection});
         },
         android_studio_add_module: function(modname, libname) {
             //warning('android_studio_add_module not implemented yet!');
-            var settings_file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/settings.gradle');
+            var settings_file = path.join(project_root, android_studio_project_dir, 'settings.gradle');
             var projpath = libname.replace(path.join(project_root, 'frameworks'), '../..');
             var injection = `\ninclude ':${modname}'\nproject(':${modname}').projectDir = new File(settingsDir, '${projpath}')\n`;
             var data = fs.readFileSync(settings_file).toString();
             data += injection;
             fs.writeFileSync(settings_file, data);
-            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/settings.gradle', 'str': injection});
+            install_log('inject', {'file': android_studio_project_dir+'/settings.gradle', 'str': injection});
         },
         android_satisfies_sdk_version: function(ver) {
             //warning('android_satisfies_sdk_version not implemented yet!');
@@ -856,8 +975,13 @@ function Functioner(plugin_path, cocos_version) {
         android_add_activity: function(activity, attributes) {
             
         },
+        android_set_key_value: function(target, key, value) {
+            warning('android_set_key_value not implemented yet!');
+        },
+        only_android_studio: function() {
+            return false;
+        },
         satisfies_cocos_version: function() {
-            //warning('Warning: satisfies_cocos_version unimplemented yet!');
             for(var key in arguments) {
                 var arg = arguments[key];
                 var comp = compareVersions(arg, cocos_version)
@@ -869,9 +993,17 @@ function Functioner(plugin_path, cocos_version) {
             }
             return false;
         },
+        satisfies_version: function(ver, obj) {
+            var comp = compareVersions(ver, obj.version)
+            if(comp == 0 || comp == 1) {
+                debug('Satisfies', ver, obj);
+                return true;
+            }
+            return false;
+        },
         define: function(key, value) {
-            warning('Warning: define unimplemented yet!');
-            
+            //warning('define unimplemented yet!');
+            fn.plugin_defines[key] = value;
         },
         open_documentation: function(url, param) {
             log('Plugin documentation:', url);
@@ -881,6 +1013,12 @@ function Functioner(plugin_path, cocos_version) {
         },
         add_manual_step: function(text) {
             log(text);
+        },
+        supports: function(feature) {
+            if(feature == 'android-studio')
+                return true;
+            else
+                return false;
         },
         
         /************** SdkBar methods **************/
@@ -907,36 +1045,34 @@ function Functioner(plugin_path, cocos_version) {
                 data = data.replace('\n    sc->start();', startMarker+func+endMarker+'\n    sc->start();');
             }
             fs.writeFileSync(fname, data);
-            install_log('inject', {'file': 'frameworks/runtime-src/Classes/AppDelegate.cpp', 're': '\n\\/\\/BEGIN_'+marker+'[\\s\\S]*?\\/\\/END_'+marker+'\n'});
+            install_log('inject', {'file': 'frameworks/runtime-src/Classes/AppDelegate.cpp', 're': '\n\\/\\/BEGIN_'+marker+'\n[\\s\\S]*?\\/\\/END_'+marker+'\n'});
+        },
+        gradle_dependencies: function(dependencies) {
+            var injection = '';
+            for(var dependency of dependencies) {
+                injection += '    '+dependency+'\n';
+            }
+            var build_file = path.join(project_root, android_studio_project_dir, 'app/build.gradle');
+            data = fs.readFileSync(build_file).toString();
+            data = data.replace('dependencies {\n', 'dependencies {\n'+injection);
+            fs.writeFileSync(build_file, data);
+            install_log('inject', {'file': android_studio_project_dir+'/app/build.gradle', 'str': injection});
         },
         gradleProject: function(projname, projpath) {
-            var settings_file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/settings.gradle');
+            var settings_file = path.join(project_root, android_studio_project_dir, 'settings.gradle');
             var injection = `\ninclude ':${projname}'\nproject(':${projname}').projectDir = new File(settingsDir, '${projpath}')\n`;
             var data = fs.readFileSync(settings_file).toString();
             data += injection;
             fs.writeFileSync(settings_file, data);
-            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/settings.gradle', 'str': injection});
+            install_log('inject', {'file': android_studio_project_dir+'/settings.gradle', 'str': injection});
             
-            var build_file = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/build.gradle');
+            var build_file = path.join(project_root, android_studio_project_dir, 'app/build.gradle');
             data = fs.readFileSync(build_file).toString();
             var injection2 = `    compile project(':${projname}')\n`;
             data = data.replace('dependencies {\n', 'dependencies {\n'+injection2);
             fs.writeFileSync(build_file, data);
-            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/app/build.gradle', 'str': injection2});
+            install_log('inject', {'file': android_studio_project_dir+'/app/build.gradle', 'str': injection2});
         },
-        /*
-        androidJni: function(files) {
-            var injection = '';
-            for(key in files) {
-                injection = injection + files[key] + ' \\\n';
-            }
-            var fname = path.join(project_root, 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk');
-            var data = fs.readFileSync(fname).toString();
-            data = data.replace('../../../Classes/AppDelegate.cpp \\\n', '../../../Classes/AppDelegate.cpp \\\n'+injection);
-            fs.writeFileSync(fname, data);
-            install_log('inject', {'file': 'frameworks/runtime-src/proj.android-studio/app/jni/Android.mk', 'str': injection});
-        },
-        */
         add_xml_item: function(file, obj) {
             var xpath = obj['path'],
                 tag = obj['tag'],
@@ -953,16 +1089,32 @@ function Functioner(plugin_path, cocos_version) {
             }
             install_log('xml', {'file': file, 'parent': xpath, 'xpath': child});
         },
+        xcode_add_frameworks_with_opts: function(frameworks, opts) {
+            xcode_add({}, frameworks, xcode_project_file, opts);
+        },
+        xcode_add_sources_with_opts: function(sources, opts) {
+            xcode_add(sources, {}, xcode_project_file, opts);
+        },
     };
     return fn;
 }
+
+var Modules = {
+    os: {
+        path: {
+            join: path.join,
+            exists: fs.existsSync,
+            dirname: path.dirname
+        },
+        remove: fs.unlinkSync
+    }
+};
 
 function script_install(plugin_path, plugin, origin, script) {
     var prev = conf[plugin.name];
     if(typeof prev != 'undefined' && prev != null) {
         error('Plugin', plugin.name, 'already installed (version ', plugin.version+')');
-        error('Remove it first');
-        process.exit(1);
+        fatal('Remove it first');
     }
     conf[plugin.name] = {
         'name': plugin.name,
@@ -985,18 +1137,23 @@ function script_install(plugin_path, plugin, origin, script) {
         'False': false,
         'COCOS_PROJECT_TYPE': 'js',
         'COCOS_2DX_VERSION': cocos_version,
+        'COCOS_ENGINE_MAKER': 'cocos2d-x',
+        'CCC_ENGINE_VERSION': cocos_version,
         'SDKBOX_PACKAGE_NAME': plugin.name,
         'PLUGIN_PATH': plugin_path,
         'COCOS_RESOURCES_DIR': project_root+'/res/',
         'COCOS_CLASSES_DIR': project_root+'/frameworks/runtime-src/Classes/',
         'ANDROID_ACTIVITY_NAME': 'AppActivity',
         'ANDROID_MK_USES_WILDCARDS': false,
-        'ANDROID_ACTIVITY_PATH'     : project_root+'/frameworks/runtime-src/proj.android-studio/app/src/org/cocos2dx/javascript/',
+        'ANDROID_ACTIVITY_PATH'     : project_root+'/'+android_studio_project_dir+'/app/src/org/cocos2dx/javascript/',
+        'ANDROID_STUDIO_ACTIVITY_PATH': project_root+'/'+android_studio_project_dir+'/app/src/org/cocos2dx/javascript/',
         'ANDROID_COCOS_SRC_DIR'     : project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/src/org/cocos2dx/lib/',
         'ANDROID_LIBS_DIR'          : project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/libs/',
         'ANDROID_COCOS_PACKAGE_ROOT': project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/',
-        'ANDROID_STUDIO_PROJECT_DIR': project_root+'/frameworks/runtime-src/proj.android-studio/',
-        'ANDROID_PROJECT_DIR'       : project_root+'/frameworks/runtime-src/proj.android/',
+        'ANDROID_STUDIO_PROJECT_DIR': project_root+'/'+android_studio_project_dir+'/',
+        'ANDROID_PROJECT_DIR'       : project_root+'/'+android_project_dir+'/',
+        'ANDROID_STUDIO_LIBS_DIR'   : project_root+'/frameworks/cocos2d-x/cocos/platform/android/java/libs/',
+        'ANDROID_PROPERTIES'        : path.join(project_root, android_studio_project_dir, 'app/project.properties'),
         'IOS_PROJECT_DIR'           : project_root+'/frameworks/runtime-src/proj.ios_mac/',
         'XCODE_PROJECT_DIR': prjs[0],
         'XCODE_PROJECT': xcode_project_file,
@@ -1038,6 +1195,9 @@ function script_install(plugin_path, plugin, origin, script) {
             arg2 = this.do_command(arg2);
             return arg1 !== arg2;
         },
+        'IN': function(arg1, arg2) {
+            return arg2.indexOf(arg1) >= 0;
+        },
         'ADD': function(arg1, arg2) {
             arg1 = this.do_command(arg1);
             arg2 = this.do_command(arg2);
@@ -1074,16 +1234,87 @@ function script_install(plugin_path, plugin, origin, script) {
                     return ar2[ind];
                 }
             }
-            error('Invalid index', ind, 'for', ar);
-            process.exit(1);
+            fatal('Invalid index', ind, 'for', ar);
+        },
+        'IMPORT': function(module) {
+            var m = Modules[module];
+            if(typeof m == 'undefined' || m == null) {
+                warning('Module', module, 'not found!');
+            } else {
+                default_scope[module] = m;
+            }
+        },
+        // block for statement
+        'FOR': function(array, index_var, block) {
+            array = this.do_command(array);
+            if(array instanceof Array) {
+                for(val of array) {
+                    default_scope[index_var] = val;
+                    var body = block.slice(0);
+                    debug('Execute for body:', JSON.stringify(body));
+                    this.do_block(body);
+                }
+            } else {
+                fatal('Invalid iteration for array', array);
+            }
+        },
+        // inline for statement
+        'FORI': function(array, index_var, expr, cond) {
+            var result = [];
+            array = this.do_command(array);
+            if(array instanceof Array) {
+                for(key in array) {
+                    var val = array[key];
+                    default_scope[index_var] = val;
+                    var res = null;
+                    var expression = expr.slice(0);
+                    if(typeof cond == 'undefined' || cond == null) {
+                        // no condition
+                        res = this.do_command(expression);
+                    } else {
+                        // check condition
+                        var condition = cond.slice(0);
+                        var res = this.do_command(condition);
+                        if(res === true) {
+                            res = this.do_command(expression);
+                        }
+                    }
+                    if(res != null) {
+                        debug('iterate', res, 'from', val);
+                        result.push(res);
+                    }
+                }
+            } else {
+                fatal('Invalid iteration for array', array);
+            }
+            return result;
+        },
+        'DEF': function(name, arglist, block) {
+            default_scope[name] = function() {
+                // check arguments
+                if(arguments.length < arglist.length) {
+                    fatal('Insufficient arguments:', arguments, 'in definition', name);
+                }
+                // prepare arguments
+                for(var i=0; i<arglist.length; i++) {
+                    var var_name = arglist[i];
+                    var var_value = arguments[i];
+                    debug('Set variable', var_name, 'value', var_value);
+                    default_scope[var_name] = var_value;
+                }
+                // execution
+                var body = block.slice(0);
+                debug('Execute definition body', JSON.stringify(body));
+                var result = this.do_block(body);
+                return result;
+            };
         },
         'variable': function(arg1) {
             arg1 = this.do_command(arg1);
             var value = this.resolve_name_in_scope(arg1, variables);
             if(value == null) {
                 error('Variable required:', arg1);
-                error('Use parameter: --variable '+arg1+'=VALUE');
-                process.exit(1);
+                fatal('Use parameter: --variable '+arg1+'=VALUE');
             }
             return value;
         }
@@ -1167,8 +1398,7 @@ function script_install(plugin_path, plugin, origin, script) {
         },
         do_block: function(block) {
             var result = null;
-            for(key in block) {
-                var command = block[key];
+            for(command of block) {
                 result = this.do_command(command);
             }
             return result;
@@ -1176,13 +1406,17 @@ function script_install(plugin_path, plugin, origin, script) {
         do_command: function(command) {
             if(command instanceof Array) {
                 // function with args
-                var cmd = command.shift();
+                var command_copy = command.slice(0);
+                var cmd = command_copy.shift();
+                if(typeof cmd !== 'string') {
+                    fatal('Unexpected command type', cmd);
+                }
                 if(cmd.startsWith('"') || cmd.startsWith("'")) {
                     // constant string detected, so process as a regular array
-                    command.unshift(cmd);
-                    return this.resolve_name(command);
+                    command_copy.unshift(cmd);
+                    return this.resolve_name(command_copy);
                 }
-                var args = command;
+                var args = command_copy;
                 var need_resolve = false;
                 var fn = this.resolve_name_in_scope(cmd, operators);
                 if(fn == null) {
@@ -1270,8 +1504,7 @@ function get_remote_plugin(uri, callback) {
                     else proc();
                 });
             } else {
-                error('Archive format not supported:', fname);
-                process.exit(1);
+                fatal('Archive format not supported:', fname);
             }
         }, function(err) {
             callback(err, null);
@@ -1289,6 +1522,19 @@ function get_remote_plugin(uri, callback) {
     }
 }
 
+function get_plugin_version(pname) {
+    var prev = conf[pname];
+    var prev_sdkbox = sdkbox_conf[pname];
+    var prev_ver = null;
+    if(typeof prev != 'undefined' && prev != null) {
+        prev_ver = prev.version;
+    }
+    if(typeof prev_sdkbox != 'undefined' && prev_sdkbox != null) {
+        prev_ver = prev_sdkbox.version.join('.');
+    }
+    return prev_ver;
+}
+
 function install_remote(url, origin, deps, callback ) {
     if(/^http/.test(url)) {
         // remote install
@@ -1304,8 +1550,7 @@ function install_remote(url, origin, deps, callback ) {
                 }
                 return true;
             } catch(err) {
-                error(err);
-                process.exit(1);
+                fatal(err);
             }
         }, callback);
     } else {
@@ -1317,60 +1562,79 @@ function install_remote(url, origin, deps, callback ) {
 function install_sdkbox(pname, origin, callback) {
     sync(function() {
         var prev = conf[pname];
+        var prev_sdkbox = sdkbox_conf[pname];
         var manifestContent = sdkbox_manifest.sync(null);
         var packs = manifestContent['packages'];
         var p = packs[pname];
+        var prev_ver = get_plugin_version(pname);
 
         if(typeof p === 'undefined' || p === null) {
-            if(typeof prev != 'undefined' && prev != null) {
-                error('Plugin', pname, 'not found');
-                if(!skip_deps_errors)
-                    process.exit(1);
-                else {
+            if(prev_ver != null) {
+                // not found plugin in manifest but plugin already installed from unknown source
+                warning('Plugin', pname, prev_ver, 'already installed');
+                callback && callback(null, true);
+            } else {
+                if(!skip_deps_errors) {
+                    fatal('Plugin', pname, 'not found');
+                } else {
+                    error('Plugin', pname, 'not found');
                     callback && callback('Plugin not found');
                 }
-            } else {
-                // not found plugin in manifest but plugin already installed from unknown source
-                warning('Plugin', pname, 'already installed');
-                callback && callback(null, true);
             }
             return;
         }
 
-        var fname = null;
+        debug('Check conflicts for', pname);
         var conflicts = p['conflict'];
         if(typeof conflicts !== 'undefined' && conflicts != null) {
             for(cn of conflicts) {
                 var pn = conf[cn];
+                var pnsb = sdkbox_conf[cn];
                 if(typeof pn != null && pn != null) {
                     error(pname, 'conflicts with', cn);
                     error(pn.name, 'installed version:', pn.version);
                     if(!skip_deps_errors)
                         process.exit(1);
+                } else if(typeof pnsb != null && pn != null) {
+                    error(pname, 'conflicts with', cn);
+                    error(pnsb.name, 'installed version:', pnsb.version.join('.'));
+                    if(!skip_deps_errors)
+                        process.exit(1);
                 }
             }
         }
+        debug('Check dependencies for', pname);
         var deps = p['dependence'];
         if(typeof deps !== 'undefined' && deps != null) {
             for(dp of deps) {
-                install_sdkbox.sync(null, dp, dp);
+                var dp_ver = get_plugin_version(dp);
+                if(dp_ver == null) {
+                    install_sdkbox.sync(null, dp, dp);
+                } else {
+                    debug('Do not upgrade dependency plugin', dp, 'with version', dp_ver);
+                }
             }
         }
+        var fname = null;
+        var new_ver = null;
+        debug('Find the source of', pname);
         for(var v in p['versions']) {
-            if(typeof prev != 'undefined' && prev != null && compareVersions(prev.version, v) <= 0) {
+            if(prev_ver != null && compareVersions(prev_ver, v) <= 0) {
                 // skip lower version
                 continue;
             }
             var vd = p['versions'][v];
             if(vd && vd['v3']) {
                 fname = 'http://download.sdkbox.com/installer/v1/' + vd['v3']['bundle'];
+                new_ver = v;
             }
         }
         if(fname) {
+            if(prev_ver != null) debug('Upgrade plugin from', prev_ver, 'to', new_ver);
             install_remote.sync(null, fname, pname, deps);
             callback && callback(null, true);
         } else {
-            if(typeof prev != 'undefined' && prev != null) {
+            if(typeof prev_ver != null) {
                 warning('Plugin', pname, 'already installed');
                 callback && callback(null, true);
             } else {
@@ -1443,8 +1707,7 @@ function install_local(installpath, origin, deps) {
             if(install_script != null)
                 script_install(installpath, {'name': plugin_name, 'version': plugin_version, 'deps': deps}, orgn, install_script);
             else {
-                error('Plugin format not supported');
-                process.exit(1);
+                fatal('Plugin format not supported');
             }
         }
     } catch (err) {
@@ -1454,15 +1717,13 @@ function install_local(installpath, origin, deps) {
             error(err);
         if(err["code"] === "ENOENT") {
             // no such file
-            error(err);
-            process.exit(1);
+            fatal(err);
         } else {
             if(typeof err['message'] !== 'undefined')
-                error(err['message'])
+                fatal(err['message'])
             else {
-                error(err);
+                fatal(err);
             }
-            process.exit(1);
         }
     }
     saveConf();
@@ -1471,8 +1732,7 @@ function install_local(installpath, origin, deps) {
 function remove(name) {
     var cc = conf[name];
     if(typeof cc == 'undefined' || cc == null) {
-        console.error('Plugin', name, 'not found!');
-        process.exit(1);
+        fatal('Plugin', name, 'not found!');
     }
     for(var pl in conf) {
         if(name === pl) continue;
@@ -1511,9 +1771,9 @@ function remove(name) {
                             if(fs.lstatSync(arg).isSymbolicLink())
                                 fs.unlinkSync(arg);
                             else
-                                warning('Warning: file not found', arg);
+                                warning('file not found', arg);
                         } catch (e) {
-                            warning('Warning: file not found', arg);
+                            warning('file not found', arg);
                         }
                     }
                     removeEmptyDirs(path.dirname(arg));
@@ -1569,8 +1829,7 @@ function update(name) {
     var internal_update = function(pluginname) {
         var cc = conf[pluginname];
         if(typeof cc == 'undefined' || cc == null) {
-            console.error('Plugin', pluginname, 'not found!');
-            process.exit(1);
+            fatal('Plugin', pluginname, 'not found!');
         }
         var origin = cc.origin;
         variables = cc.variables || {};
@@ -1596,8 +1855,7 @@ function setVariable(arg) {
     if(ar.length == 2) {
         variables[ar[0]] = ar[1];
     } else {
-        error('Invalid variable:', arg);
-        process.exit(1);
+        fatal('Invalid variable:', arg);
     }
 }
 

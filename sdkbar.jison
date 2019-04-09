@@ -30,7 +30,9 @@ array_element
 
 array
     : '[' arg_list ']'
-      { $$ = $2; }
+    { $$ = $2; }
+    | '[' inline_iteration ']'
+    { $$ = $2; }
     ;
 
 string
@@ -85,6 +87,8 @@ expression
     | object
     | NOT expression
     { $$ = ['NOT', $2]; }
+    | operand IN operand
+    { $$ = ['IN', $1, $3]; }
     | expression AND expression
     { $$ = ['AND', $1, $3]; }
     | expression OR expression
@@ -115,7 +119,7 @@ arg_list
     ;
 
 named_parameter
-    : TOKEN '=' expression
+    : variable '=' expression
     { var par = {}; par[$1] = $3; $$ = par; }
     ;
 
@@ -129,8 +133,24 @@ long_token
 function_call
     : TOKEN '(' arg_list ')'
     { $3.unshift($1); $$ = $3; }
+    | TOKEN '(' ')'
+    { $$ = [$1]; }
     | long_token '(' arg_list ')'
     { $3.unshift($1); $$ = $3; }
+    | long_token '(' ')'
+    { $$ = [$1]; }
+    ;
+
+iteration
+    : FOR variable IN variable ':' block
+    { $$ = ['FOR', $4, $2, $6]; }
+    ;
+
+inline_iteration
+    : expression FOR variable IN variable
+    { $$ = ['FORI', $5, $3, $1]; }
+    | expression FOR variable IN variable IF expression
+    { $$ = ['FORI', $5, $3, $1, $7]; }
     ;
 
 if_statement
@@ -138,6 +158,17 @@ if_statement
     { $$ = ['IF', $expression, $block]; }
     | IF expression ':' block ELSE block
     { $$ = ['IF', $expression, $4, $6]; }
+    | IF expression ':' block ELIF expression ':' block ELSE block
+    { $$ = ['IF', $2, $4, [['IF', $6, $8, $10]]]; }
+    | IF expression ':' block ELIF expression ':' block
+    { $$ = ['IF', $2, $4, [['IF', $6, $8]]]; }
+    ;
+
+inline_if_statement
+    : IF expression ':' function_call
+    { $$ = ['IF', $expression, [$4]]; }
+    | IF expression ':' assignment
+    { $$ = ['IF', $expression, [$4]]; }
     ;
 
 assignment
@@ -145,11 +176,25 @@ assignment
     { $$ = ['ASSIGN', $1, $3]; }
     ;
 
+import
+    : IMPORT TOKEN
+    { $$ = ['IMPORT', $2]; }
+    ;
+
+routine
+    : DEF TOKEN '(' arg_list ')' ':' block
+    { $$ = ['DEF', $2, $4, $7]; }
+    ;
+
 line
     : if_statement
+    | inline_if_statement
     | assignment
     | function_call
+    | import
     | string
+    | routine
+    | iteration
     ;
 
 blockcontent
