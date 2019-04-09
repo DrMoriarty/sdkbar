@@ -3,7 +3,13 @@ Plugin manager for cocos2d-x with support sdkbox plugin format.
 
 # Usage
 
-`sdkbar --list|-l` show installed plugins list 
+`sdkbar --help|-h` show help page.
+
+`sdkbar --list|-l` show installed plugins list
+
+`sdkbar --list-box|-b` show all available plugins from SdkBox server.
+
+`sdkbar --search|-s <word>` search plugins in SdkBox server matched to word.
 
 `sdkbar --install|-i <plugin source>` install the plugin from local or remote source. You can use link to github repo, or link to zip or tar.gz archive.
 
@@ -13,13 +19,17 @@ Plugin manager for cocos2d-x with support sdkbox plugin format.
 
 `sdkbar --updateall` update all installed plugins
 
+`sdkbar --show <plugin name>` show detail information about an SdkBar plugin.
+
 ## Options
 
 `--verbose` shows a lot of debug output
 
-`--no-clean` don't clean install temp folder which usually is in ~/.sdkbar/cache
+`--no-clean` don't clean install temp folder which usually is ~/.sdkbar/cache
 
 `--variable|-v KEY=VALUE` set installation variable. Some plugins can use them to set up the plugin configuration.
+
+`--force|-f` ignores dependency errors.
 
 # Examples
 
@@ -46,17 +56,17 @@ sdkbar --install ~/projects/sdkbar-vk/ --variable APP_ID=NNNNNNN
 
 Install remote plugin from the git repository:
 ```
-sdkbar --install https://github.com/DrMoriarty/sdkbar-vk.git --variable APP_ID=NNNNNNN
+sdkbar --install https://github.com/OrangeAppsRu/sdkbar-vk.git --variable APP_ID=NNNNNNN
 ```
 
 Install remove plugin from the specified git commit:
 ```
-sdkbar --install https://github.com/DrMoriarty/sdkbar-vk/archive/b415bc9c34565bb1ed54e028628bca71bc377ac1.zip --variable APP_ID=NNNNNNN
+sdkbar --install https://github.com/OrangeAppsRu/sdkbar-vk/archive/b415bc9c34565bb1ed54e028628bca71bc377ac1.zip --variable APP_ID=NNNNNNN
 ```
 
 Install SDKBOX plugin:
 ```
-sdkbar -i http://download.sdkbox.com/installer/v1/sdkbox-iap_v2.3.15.2.tar.gz
+sdkbar -i sdkboxads
 ```
 
 Note: now you can update plugins with `--update` command only if them was installed from the git repository.
